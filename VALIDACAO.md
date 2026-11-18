@@ -73,3 +73,12 @@ Os testes do código das ações nativas passaram; a descoberta e execução des
 - Toolbar testa catálogo de quatro modos e prioridade do seletor.
 - Dois ZIPs fictícios foram abertos pela entrega de eventos do Launch Services em uma cópia isolada; a cópia foi encerrada para manter apenas o aplicativo original ativo no Dock.
 - Fechamento encerra também o Quick Look pertencente à janela, sem interromper outras janelas.
+
+## Versão 2.6.0 — RAR5 e volumes nativos
+
+- Motor oficial RAR macOS ARM64 7.23 testado como ferramenta externa, sem inclusão no bundle/repositório.
+- `test-native-volumes.sh`: RAR5 com assinatura binária correta, senha via stdin, Unicode, nomes com caracteres curingas literais, pastas vazias e 11 volumes com numeração preenchida com zero.
+- Extração byte a byte de 11,1 MB aleatórios em RAR, ZIP e 7z protegidos; rejeição de partes intermediárias ausentes nos três formatos.
+- Conflito de nomes preserva todos os volumes anteriores; cancelamento não publica saídas; configurações salvas antigas continuam decodificando.
+- `test.sh`: motor, documentos, Atalhos, limpeza global, compatibilidade ZipCrypto/unzip e resumo antes de salvar sem regressões.
+- Preferências e múltiplas janelas verificadas pelos testes específicos.

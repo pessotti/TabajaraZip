@@ -219,7 +219,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
     func showFileOptions() { guard canEditFileOptions else { return }; optionsVisible = true }
     var savedProtection: ArchiveProtection { ArchiveProtection.detect(originalEntries) }
     var protectionLabel: String { archiveURL == nil ? "Ainda não salvo" : savedProtection.label }
-    var editableFormat: Bool { ["zip","7z","tar","tgz","tbz2","txz"].contains(options.format) }
+    var editableFormat: Bool { ["zip","7z","rar","tar","tgz","tbz2","txz"].contains(options.format) }
     var visibleEntries: [ArchiveEntry] {
         if !search.isEmpty { return sortedEntries(unhiddenEntries.filter { $0.path.localizedCaseInsensitiveContains(search) }) }
         guard viewMode == .outline else { return children(in:folder) }
@@ -277,7 +277,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
     }
     func preferredSaveOptions() -> SaveOptions {
         var options = SaveOptions()
-        options.format = ["zip","7z","tar","tgz","tbz2","txz"].contains(preferences.format) ? preferences.format : "zip"
+        options.format = ["zip","7z","rar","tar","tgz","tbz2","txz"].contains(preferences.format) ? preferences.format : "zip"
         options.level = [0,1,5,9].contains(preferences.compression) ? preferences.compression : 5
         return options
     }
@@ -334,7 +334,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
             guard let self else { return }; self.clearOldSession(); self.session = new
             self.archiveURL = url; self.contentArchive = source; self.entries = index.entries; self.originalEntries = index.entries
             self.stamp = stamp; self.contentStamp = contentStamp; self.directMode = preserveDirect; self.password = supplied; self.savePassword = supplied
-            self.options = self.preferredSaveOptions(); self.options.format = ["zip","7z","tar","tgz","tbz2","txz"].contains(index.format) ? index.format : "zip"; self.options.encrypt = index.encrypted
+            self.options = self.preferredSaveOptions(); self.options.format = ["zip","7z","rar","tar","tgz","tbz2","txz"].contains(index.format) ? index.format : "zip"; self.options.encrypt = index.encrypted
             if let replacingRecent { self.recent.removeAll { $0 == replacingRecent } }
             self.recent.removeAll { $0 == url.path }; self.recent.insert(url.path,at:0); self.recent = Array(self.recent.prefix(max(5,min(50,self.preferences.recentLimit)))); self.persistRecent()
             self.preferencesStore.defaults.set(url.path,forKey:"lastOpenedArchive")
@@ -468,8 +468,12 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
         if !synced, !external.isEmpty { checkExternalEdits { [weak self] in self?.save(as:saveAs,synced:true) }; return }
         guard sourcePassword() else { return }
         var dest = archiveURL
-        if saveAs || dest == nil || !editableFormat || (dest != nil && !["zip","7z","tar","tgz","tbz2","txz"].contains(dest!.pathExtension.lowercased())) {
-            let p = NSSavePanel(); p.nameFieldStringValue = (archiveURL?.deletingPathExtension().lastPathComponent ?? "Arquivo Tabajara") + "." + options.format
+        if saveAs || (dest != nil && dest!.pathExtension.lowercased() != options.format) || options.volumeMB != nil || archiveURL?.lastPathComponent.range(of:"\\.part[0-9]+\\.rar$",options:.regularExpression) != nil || dest == nil || !editableFormat || (dest != nil && !["zip","7z","rar","tar","tgz","tbz2","txz"].contains(dest!.pathExtension.lowercased())) {
+            let p = NSSavePanel()
+            let originalName = archiveURL?.lastPathComponent ?? "Arquivo Tabajara"
+            let stem = originalName.replacingOccurrences(of:"\\.part[0-9]+\\.rar$|\\.7z\\.[0-9]+$",with:"",options:.regularExpression)
+            p.nameFieldStringValue = (stem != originalName ? stem : archiveURL?.deletingPathExtension().lastPathComponent ?? "Arquivo Tabajara") + "." + options.format
+            if options.volumeMB != nil { p.message = "Todas as partes serão criadas nesta pasta. Escolha um novo nome se já existir um conjunto de volumes." }
             p.allowedContentTypes = [UTType(filenameExtension:options.format) ?? .data]
             guard p.runModal() == .OK, let u = p.url else { return }; dest = u
         }
@@ -487,13 +491,14 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
     private func commitSave(_ request: PendingSave) {
         let current = request.entries, old = request.original, source = request.source, sourceStamp = request.sourceStamp
         let opts = request.options, pass = request.password, oldPass = request.originalPassword, userURL = request.userURL, userStamp = request.userStamp
-        let session = request.session, destination = request.destination
+        let session = request.session
         job("Salvando…",work:{ control,update in
             if let userURL, let userStamp, try DiskStamp(userURL) != userStamp { throw ArchiveError("O original foi alterado por outro aplicativo. Reabra-o antes de salvar.") }
-            _ = try ArchiveEngine.write(entries:current,originalEntries:old,archive:source,destination:destination,options:opts,password:pass,originalPassword:oldPass,expectedStamp:sourceStamp,excludeMetadata:request.excludeMetadata,control:control,progress:update)
+            _ = try ArchiveEngine.write(entries:current,originalEntries:old,archive:source,destination:request.destination,options:opts,password:pass,originalPassword:oldPass,expectedStamp:sourceStamp,excludeMetadata:request.excludeMetadata,control:control,progress:update)
+            let destination = ArchiveEngine.savedURL(request.destination,options:opts)
             let (index,source) = try ArchiveEngine.resolve(destination,in:session,password:opts.encrypt ? pass : nil,control:JobControl())
-            return (index,source,try DiskStamp(destination),try DiskStamp(source))
-        },done:{ [weak self] index,source,stamp,sourceStamp in
+            return (index,source,try DiskStamp(destination),try DiskStamp(source),destination)
+        },done:{ [weak self] index,source,stamp,sourceStamp,destination in
             guard let self else { return }
             self.archiveURL = destination; self.stamp = stamp; self.password = opts.encrypt ? pass : nil; self.savePassword = self.password
             self.dirty = false; self.undoStack = []; self.redoStack = []; self.undoCount = 0; self.redoCount = 0
@@ -507,7 +512,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
     func toggleDirect() {
         guard !busy, saveReview == nil else { return }
         if !directMode {
-            guard archiveURL != nil, !dirty, ["zip","7z"].contains(options.format) else { error = "Salve primeiro um ZIP ou 7z sem alterações pendentes para ativar o modo direto."; return }
+            guard archiveURL != nil, !dirty, options.volumeMB == nil, archiveURL?.pathExtension != "001", !(archiveURL.map { FileManager.default.fileExists(atPath:$0.deletingPathExtension().appendingPathExtension("z01").path) } ?? false), ["zip","7z"].contains(options.format) else { error = "Salve primeiro um ZIP ou 7z sem alterações pendentes para ativar o modo direto."; return }
             let a = NSAlert(); a.messageText = "Ativar modo direto?"; a.informativeText = "Cada alteração será salva imediatamente, com verificação e troca segura do arquivo. O resumo antes de salvar e o comando Desfazer ficam indisponíveis neste modo."; a.addButton(withTitle:"Ativar"); a.addButton(withTitle:"Cancelar")
             if a.runModal() == .alertFirstButtonReturn { directMode = true; undoStack = []; redoStack = []; undoCount = 0; redoCount = 0 }
         } else { directMode = false }

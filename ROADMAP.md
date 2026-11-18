@@ -1,4 +1,4 @@
-# Implementação do roadmap — TabajaraZip 2.5.0
+# Implementação do roadmap — TabajaraZip 2.6.0
 
 | Etapa proposta | Implementado |
 | --- | --- |
@@ -13,7 +13,7 @@
 
 ## Limites explícitos
 
-- Não cria RAR e não gera/repara registros ou volumes de recuperação RAR. A recuperação implementada é de ZIP e não reconstrói dados perdidos.
+- Cria RAR5 com o motor RAR oficial externo e volumes nativos ZIP/7z/RAR. Não cria RAR4 nem gera/repara registros ou volumes de recuperação RAR. A recuperação implementada é de ZIP e não reconstrói dados perdidos.
 - A extensão Quick Look e a descoberta das ações no sistema dependem do registro/ativação pelo macOS. Os testes das ações verificam também a execução do código, independentemente da interface do Atalhos.
 - O modo direto mantém a cópia temporária de segurança. Não há promessa de edição sem espaço adicional em disco.
 - Arquivos 7z sólidos e conversões podem exigir recompressão. Criptografia reconstrói o arquivo completo.
@@ -52,3 +52,11 @@
 - Lista, árvore expansível, colunas e grade de ícones no seletor da toolbar.
 - Resumo de removidos com toda a linha clicável.
 - Cópia de teste isolada encerrada; testes posteriores não geram ícone no Dock.
+
+## RAR5 e volumes nativos — 2.6.0
+
+- Criação/conversão RAR5, senha com AES-256, compressão e filtros.
+- Volumes nativos em ZIP, 7z e RAR, incluindo numeração RAR com mais de dez partes.
+- Verificação de todo o conjunto antes de publicar, cancelamento e reversão das partes já movidas em caso de falha.
+- Conjuntos existentes preservados; alterações exigem outro nome. Segmentação binária antiga permanece separada.
+- Motor RAR externo selecionável em Ajustes → Avançado; executável proprietário não acompanha o app nem o repositório.

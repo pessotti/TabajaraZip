@@ -63,6 +63,7 @@ struct SaveReviewView: View {
             Divider()
             Grid(alignment:.leading,horizontalSpacing:20,verticalSpacing:8) {
                 GridRow { Text("Formato").foregroundStyle(.secondary); Text(review.options.format.uppercased()) }
+                if let size = review.options.volumeMB { GridRow { Text("Volumes nativos").foregroundStyle(.secondary); Text("\(review.options.format.uppercased()) • até \(size) MB por parte") } }
                 GridRow { Text("Proteção atual").foregroundStyle(.secondary); Text(review.userURL == nil ? "Novo arquivo" : review.currentProtection.label) }
                 GridRow { Text("Após salvar").foregroundStyle(.secondary); Label(ArchiveProtection.output(review.options).label,systemImage:ArchiveProtection.output(review.options).icon) }
                 GridRow { Text("Conteúdo final").foregroundStyle(.secondary); Text("\(summary.totalFiles) arquivos • \(ByteCountFormatter.string(fromByteCount:summary.totalBytes,countStyle:.file))") }
@@ -104,14 +105,22 @@ struct OptionsView: View {
             Text("Aperta que cabe — opções").font(.title2.bold())
             Form {
                 Picker("Formato de saída",selection:$doc.options.format) {
-                    Text("ZIP").tag("zip"); Text("7z").tag("7z"); Text("TAR").tag("tar")
+                    Text("ZIP").tag("zip"); Text("7z").tag("7z"); Text("RAR (RAR5)").tag("rar"); Text("TAR").tag("tar")
                     Text("TAR + Gzip").tag("tgz"); Text("TAR + Bzip2").tag("tbz2"); Text("TAR + XZ").tag("txz")
                 }
                 Picker("Compressão",selection:$doc.options.level) { Text("Sem compressão").tag(0); Text("Rápida").tag(1); Text("Equilibrada").tag(5); Text("Máxima").tag(9) }.disabled(doc.options.format == "tar")
-                Toggle(doc.options.format == "zip" ? "Proteger com senha (compatível com unzip)" : "Criptografar com AES-256",isOn:$doc.options.encrypt).disabled(!["zip","7z"].contains(doc.options.format))
+                Toggle(doc.options.format == "zip" ? "Proteger com senha (compatível com unzip)" : "Criptografar com AES-256",isOn:$doc.options.encrypt).disabled(!["zip","7z","rar"].contains(doc.options.format))
                 if doc.options.encrypt {
                     Button(doc.savePassword == nil ? "Definir senha…" : "Alterar senha…") { if let pass = doc.askPassword(title:"Senha de gravação",confirm:true) { doc.savePassword = pass } }
                     Text(doc.options.format == "zip" ? "ZIP usa ZipCrypto para compatibilidade com unzip. É uma proteção fraca. A senha fica apenas na memória desta sessão." : "A senha fica apenas na memória desta sessão.").font(.caption).foregroundStyle(.secondary)
+                }
+                if ["zip","7z","rar"].contains(doc.options.format) {
+                    Toggle("Dividir em volumes nativos",isOn:Binding(get:{ doc.options.volumeMB != nil },set:{ doc.options.volumeMB = $0 ? 100 : nil }))
+                    if doc.options.volumeMB != nil {
+                        TextField("Tamanho de cada volume (MB)",value:Binding(get:{ doc.options.volumeMB ?? 100 },set:{ doc.options.volumeMB = $0 }),format:.number)
+                        Text(doc.options.format == "rar" ? "Gera .part1.rar, .part2.rar… Abra a primeira parte." : doc.options.format == "7z" ? "Gera .7z.001, .7z.002… Abra a primeira parte." : "Gera .z01, .z02… e .zip. Abra o arquivo .zip.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if doc.options.format == "rar", ArchiveEngine.rarTool == nil { Text("Requer o RAR oficial, configurado em Ajustes → Avançado.").font(.caption).foregroundStyle(.secondary) }
                 }
                 TextField("Incluir nomes (ex.: *.pdf;*.txt)",text:$doc.options.include)
                 TextField("Excluir nomes (ex.: *.tmp;build/*)",text:$doc.options.exclude)
@@ -125,7 +134,7 @@ struct OptionsView: View {
             HStack { Spacer(); Button("Concluir") { dismiss() }.keyboardShortcut(.defaultAction) }
         }.padding(24).frame(width:540)
         .onAppear { doc.optionsBaseline = doc.options }
-        .onChange(of:doc.options.format) { _,format in if !["zip","7z"].contains(format) { doc.options.encrypt = false } }
+        .onChange(of:doc.options.format) { _,format in if !["zip","7z","rar"].contains(format) { doc.options.encrypt = false }; if !["zip","7z","rar"].contains(format) { doc.options.volumeMB = nil } }
         .onDisappear { if doc.optionsBaseline != doc.options, doc.opened { doc.dirty = true } }
     }
 }

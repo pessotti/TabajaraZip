@@ -8,13 +8,14 @@ Editor de arquivos compactados nativo para macOS, com interface em português e 
 
 ## Download
 
-Baixe o aplicativo pronto na página de [Releases](https://github.com/pessotti/TabajaraZip/releases/latest). A versão atual é **2.5.0**.
+Baixe o aplicativo pronto na página de [Releases](https://github.com/pessotti/TabajaraZip/releases/latest). A versão atual é **2.6.0**.
 
 Requer **Mac com Apple Silicon e macOS 14 ou posterior**. O aplicativo distribuído usa assinatura local e não é notarizado pela Apple.
 
 ## Recursos
 
-- Abrir ZIP, 7z, RAR, TAR e outros formatos reconhecidos pelo 7-Zip; gravar ZIP, 7z, TAR, TGZ, TBZ2 e TXZ.
+- Abrir ZIP, 7z, RAR, TAR e outros formatos reconhecidos pelo 7-Zip; gravar ZIP, 7z, RAR5, TAR, TGZ, TBZ2 e TXZ (RAR requer ferramenta oficial separada).
+- Volumes nativos ZIP (`.z01` + `.zip`), 7z (`.7z.001`) e RAR (`.partNN.rar`), com tamanho configurável e verificação de integridade.
 - Janelas independentes; abrir novamente o mesmo arquivo foca a janela existente.
 - Visualizações de lista, pastas expansíveis, colunas e ícones, selecionadas na toolbar personalizável.
 - Adicionar, remover, renomear, mover, editar e arrastar itens para o Finder.
@@ -23,6 +24,12 @@ Requer **Mac com Apple Silicon e macOS 14 ou posterior**. O aplicativo distribu�
 - Senhas ZIP com ZipCrypto para compatibilidade com unzip tradicional; 7z com AES-256.
 - Prévia de imagens, PDF e texto; Quick Look, edição externa, Serviços do Finder, Atalhos e linha de comando.
 - Sete abas de preferências, temas claro/escuro, recentes e limpeza opcional de metadados do macOS.
+
+## Criar RAR e volumes
+
+Em **Opções do arquivo**, escolha RAR (RAR5), ZIP ou 7z e ative **Dividir em volumes nativos**, definindo o tamanho em MB (1 MB = 1.048.576 bytes). Mantenha todas as partes juntas. Abra `.zip` para ZIP dividido, `.7z.001` para 7z ou a primeira `.partNN.rar` para RAR. Conjuntos existentes não são sobrescritos; salve alterações com outro nome.
+
+Para criar RAR, baixe o [RAR oficial para macOS ARM64](https://www.rarlab.com/download.htm), extraia o pacote em uma pasta permanente e selecione o executável `rar` em **Ajustes → Avançado**. O motor é comercial, com avaliação; não é incluído no aplicativo. O formato de saída é RAR5, sem criação de RAR4 antigo. A abertura de RAR funciona com o motor livre incluído no app.
 
 ## Compilar
 
@@ -48,6 +55,7 @@ Após compilar:
 ./test-drag.sh
 ./test-workspace.sh
 ./test-view-snapshots.sh
+./test-native-volumes.sh  # requer RAR externo configurado ou TABAJARA_RAR
 ```
 
 Os testes nativos exigem uma sessão gráfica do macOS. Os testes de visualização geram imagens em `/private/tmp/TabajaraViewModes`, sem criar um ícone extra no Dock.

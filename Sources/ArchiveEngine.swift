@@ -63,7 +63,7 @@ enum ArchiveProtection: String, Hashable, Sendable {
         let methods = Set(encrypted.map { entry -> Self in
             let method = (entry.encryptionMethod ?? "").lowercased()
             if method.contains("zipcrypto") { return .zipCrypto }
-            if method.contains("aes-256") || method.contains("7zaes") { return .aes256 }
+            if method.contains("aes-256") || method.contains("7zaes") || method.contains("rar5 aes") { return .aes256 }
             return .other
         })
         if methods.count > 1 || encrypted.count != files.count { return .mixed }
@@ -87,6 +87,7 @@ struct SaveOptions: Codable, Equatable, Sendable {
     var encrypt = false
     var include = ""
     var exclude = ""
+    var volumeMB: Int? = nil
 }
 
 struct DiskStamp: Codable, Equatable, Sendable {
@@ -99,6 +100,19 @@ struct DiskStamp: Codable, Equatable, Sendable {
 }
 
 enum ArchiveEngine {
+    static var rarTool: URL? {
+        let candidates = [ProcessInfo.processInfo.environment["TABAJARA_RAR"], UserDefaults.standard.string(forKey:"rarExecutable"), FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/TabajaraZip/RAR/rar").path, "/opt/homebrew/bin/rar", "/usr/local/bin/rar"].compactMap { $0 }
+        return candidates.map { URL(fileURLWithPath:$0) }.first { fm.isExecutableFile(atPath:$0.path) }
+    }
+    static func savedURL(_ destination: URL, options: SaveOptions) -> URL {
+        guard options.volumeMB != nil else { return destination }
+        if options.format == "7z" { return destination.appendingPathExtension("001") }
+        guard options.format == "rar" else { return destination }
+        let base = destination.deletingPathExtension().lastPathComponent
+        let pattern = "^" + NSRegularExpression.escapedPattern(for:base) + "\\.part0*1\\.rar$"
+        let files = (try? fm.contentsOfDirectory(at:destination.deletingLastPathComponent(),includingPropertiesForKeys:nil)) ?? []
+        return files.first { $0.lastPathComponent.range(of:pattern,options:.regularExpression) != nil } ?? destination.deletingPathExtension().appendingPathExtension("part1.rar")
+    }
     static let fm = FileManager.default
     static var tool: URL {
         if let override = ProcessInfo.processInfo.environment["TABAJARA_7ZZ"] { return URL(fileURLWithPath: override) }
@@ -387,8 +401,9 @@ enum ArchiveEngine {
                       options: SaveOptions, password: String?, originalPassword: String?, expectedStamp: DiskStamp?,
                       excludeMetadata: Bool = ArchivePreferences.excludeMetadata, control: JobControl, progress: JobProgress) throws -> ArchiveIndex {
         try validateEntries(entries)
-        guard ["zip","7z","tar","tgz","tbz2","txz"].contains(options.format) else { throw ArchiveError("Formato de gravação não suportado.") }
-        if options.encrypt && (password?.isEmpty != false || !["zip","7z"].contains(options.format)) { throw ArchiveError("Defina uma senha para criar ZIP/7z criptografado.") }
+        if let size = options.volumeMB { guard ["zip","7z","rar"].contains(options.format), (1...1_000_000).contains(size) else { throw ArchiveError("Volumes nativos exigem ZIP, 7z ou RAR e tamanho entre 1 e 1.000.000 MB.") } }
+        guard ["zip","7z","rar","tar","tgz","tbz2","txz"].contains(options.format) else { throw ArchiveError("Formato de gravação não suportado.") }
+        if options.encrypt && (password?.isEmpty != false || !["zip","7z","rar"].contains(options.format)) { throw ArchiveError("Defina uma senha para criar ZIP, 7z ou RAR criptografado.") }
         if options.encrypt && options.format == "zip", let password, !password.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value <= 126 }) { throw ArchiveError("Para ZIP compatível com unzip, use uma senha sem acentos ou emojis. O formato 7z aceita senhas Unicode.") }
         if let archive, let expectedStamp, try DiskStamp(archive) != expectedStamp { throw ArchiveError("O arquivo original foi alterado por outro programa. Reabra-o antes de salvar.") }
         let temp = try workspace(in: destination.deletingLastPathComponent()); defer { try? fm.removeItem(at: temp) }
@@ -396,11 +411,14 @@ enum ArchiveEngine {
         let input = temp.appendingPathComponent("input"); try fm.createDirectory(at: input, withIntermediateDirectories: true)
         let wanted = filtered(entries, options: options, excludeMetadata: excludeMetadata)
         let originalFormat = archive?.pathExtension.lowercased()
-        let incremental = archive != nil && originalFormat == options.format && ["zip","7z"].contains(options.format) && !options.encrypt && !originalEntries.contains(where: \.encrypted)
+        let incremental = options.volumeMB == nil && archive != nil && originalFormat == options.format && ["zip","7z"].contains(options.format) && !options.encrypt && !originalEntries.contains(where: \.encrypted)
         let changed = incremental ? wanted.filter { $0.staged != nil || $0.original != $0.path } : wanted
         for (i,e) in changed.enumerated() {
             progress(Double(i) / Double(max(changed.count, 1)) * 0.50, "Preparando \(e.name)")
             try materialize(e, archive: archive, password: originalPassword, to: input.appendingPathComponent(e.path), control: control)
+        }
+        if options.format == "rar" || (options.format == "7z" && options.volumeMB != nil) {
+            return try writeNativeArchive(input:input, temp:temp, wanted:wanted, destination:destination, options:options, password:password, archive:archive, expectedStamp:expectedStamp, control:control, progress:progress)
         }
         let compression = "-mx\(options.level)"
         var params = ["-t" + (options.format == "tgz" || options.format == "tbz2" || options.format == "txz" ? "tar" : options.format), compression, "-spd", "-sse"]
@@ -438,11 +456,75 @@ enum ArchiveEngine {
         }
         try control.check()
         if let archive, let expectedStamp, try DiskStamp(archive) != expectedStamp { throw ArchiveError("O original mudou durante a gravação. Nenhuma substituição foi feita.") }
+        if options.format == "zip", let size = options.volumeMB {
+            guard size >= 1 && size <= 1_000_000 else { throw ArchiveError("Tamanho de volume inválido.") }
+            let folder = temp.appendingPathComponent("zip-volumes"); try fm.createDirectory(at:folder,withIntermediateDirectories:true)
+            let primary = folder.appendingPathComponent(destination.lastPathComponent)
+            try run(["-q", "-s", "\(size)m",output.path,"--out",primary.path],executable:URL(fileURLWithPath:"/usr/bin/zip"),control:control)
+            try test(primary,password:options.encrypt ? password : nil,control:control)
+            if let archive, let expectedStamp, try DiskStamp(archive) != expectedStamp { throw ArchiveError("O original mudou durante a criação dos volumes. Nenhuma substituição foi feita.") }
+            try publishVolumes(folder:folder,destination:destination,control:control)
+            progress(1,"Volumes ZIP salvos e verificados")
+            return saved
+        }
         progress(0.95, "Concluindo…")
         if fm.fileExists(atPath: destination.path) { _ = try fm.replaceItemAt(destination, withItemAt: output) }
         else { try fm.moveItem(at: output, to: destination) }
         progress(1, "Concluído")
         return saved
+    }
+    // RAR is intentionally external: its license forbids bundling it with this app.
+    static func writeNativeArchive(input: URL, temp: URL, wanted: [ArchiveEntry], destination: URL, options: SaveOptions, password: String?, archive: URL?, expectedStamp: DiskStamp?, control: JobControl, progress: JobProgress) throws -> ArchiveIndex {
+        if options.format == "rar", rarTool == nil { throw ArchiveError("Para criar RAR/RAR5, selecione o executável RAR oficial em Ajustes → Avançado. Baixe a versão para macOS em rarlab.com.") }
+        guard !wanted.isEmpty else { throw ArchiveError("Adicione pelo menos um item para criar este arquivo compactado.") }
+        if let size = options.volumeMB { guard size >= 1 && size <= 1_000_000 else { throw ArchiveError("Use volumes entre 1 e 1.000.000 MB.") } }
+        let outputFolder = temp.appendingPathComponent("native-output")
+        try fm.createDirectory(at:outputFolder,withIntermediateDirectories:true)
+        let output = outputFolder.appendingPathComponent(destination.lastPathComponent)
+        var args = options.format == "rar" ? ["a", "-cfg-", "-ma5", "-r", "-idq", "-m\(options.level == 5 ? 3 : min(5,max(0,options.level)))"] : ["a", "-t7z", "-mx\(options.level)", "-spd", "-sse"]
+        if let size = options.volumeMB { args.append("-v\(size)m") }
+        if options.encrypt { args.append("-p"); if options.format == "7z" { args.append("-mhe=on") } }
+        progress(0.53,"Criando arquivo compactado e volumes…")
+        try run(args + ["--",output.path,"."],at:input,password:options.encrypt ? password : nil,executable:options.format == "rar" ? rarTool : nil,control:control)
+        let primary = savedURL(output,options:options)
+        progress(0.78,"Verificando todos os volumes…")
+        try test(primary,password:options.encrypt ? password : nil,control:control)
+        let saved = try list(primary,password:options.encrypt ? password : nil,control:control)
+        guard Set(saved.entries.filter { !$0.directory }.map(\.path)) == Set(wanted.filter { !$0.directory }.map(\.path)) else { throw ArchiveError("Conteúdo diferente do esperado. O original foi preservado.") }
+        let parts = try fm.contentsOfDirectory(at:outputFolder,includingPropertiesForKeys:nil)
+        let targets = parts.map { destination.deletingLastPathComponent().appendingPathComponent($0.lastPathComponent) }
+        if options.volumeMB != nil {
+            if options.format == "rar" {
+                let base = NSRegularExpression.escapedPattern(for:destination.deletingPathExtension().lastPathComponent)
+                let existing = try fm.contentsOfDirectory(at:destination.deletingLastPathComponent(),includingPropertiesForKeys:nil)
+                guard !existing.contains(where:{ $0.lastPathComponent.range(of:"^" + base + "\\.part[0-9]+\\.rar$",options:.regularExpression) != nil }) else { throw ArchiveError("Já existe um conjunto RAR com esse nome. Escolha outro nome.") }
+            }
+            guard targets.allSatisfy({ !fm.fileExists(atPath:$0.path) }) else { throw ArchiveError("Já existem volumes com esse nome. Use Salvar como e escolha outro nome para preservar o conjunto anterior.") }
+        }
+        try control.check()
+        if let archive, let expectedStamp, try DiskStamp(archive) != expectedStamp { throw ArchiveError("O original mudou durante a gravação. Nenhuma substituição foi feita.") }
+        var moved: [URL] = []
+        do {
+            for (part,target) in zip(parts,targets) {
+                try control.check()
+                if options.volumeMB == nil && fm.fileExists(atPath:target.path) { _ = try fm.replaceItemAt(target,withItemAt:part) }
+                else { try fm.moveItem(at:part,to:target); moved.append(target) }
+            }
+        } catch {
+            for target in moved { try? fm.removeItem(at:target) }
+            throw error
+        }
+        progress(1,"Arquivo salvo e verificado")
+        return saved
+    }
+    static func publishVolumes(folder: URL, destination: URL, control: JobControl) throws {
+        let parts = try fm.contentsOfDirectory(at:folder,includingPropertiesForKeys:nil)
+        let targets = parts.map { destination.deletingLastPathComponent().appendingPathComponent($0.lastPathComponent) }
+        guard targets.allSatisfy({ !fm.fileExists(atPath:$0.path) }) else { throw ArchiveError("Já existem volumes com esse nome. Escolha outro nome para preservar o conjunto anterior.") }
+        var moved: [URL] = []
+        do {
+            for (part,target) in zip(parts,targets) { try control.check(); try fm.moveItem(at:part,to:target); moved.append(target) }
+        } catch { for target in moved { try? fm.removeItem(at:target) }; throw error }
     }
     enum Conflict: String, CaseIterable, Codable, Sendable { case ask = "Perguntar", replace = "Substituir", skip = "Ignorar", keepBoth = "Manter ambos" }
     static func unique(_ url: URL) -> URL {

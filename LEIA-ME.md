@@ -129,3 +129,11 @@ Fontes em Sources, extensão em Extensions/QuickLook e testes em Tests. Execute 
 O motor incluído é a distribuição oficial 7-Zip 26.06 para macOS arm64, executada como processo separado. Licenças, avisos e código-fonte correspondente estão incluídos em Contents/Resources. Site: https://www.7-zip.org/ . Nenhuma afiliação com Organizações Tabajara, WinRAR ou BetterZip é declarada.
 
 O botão Extrair abre sempre o menu de opções, inclusive ao clicar no ícone. Para criar uma subpasta, use a ação explícita Extrair em pasta com o nome do arquivo; essa opção não faz parte das preferências gerais.
+
+## RAR5 e volumes nativos (2.6.0)
+
+Abra Opções do arquivo, selecione ZIP, 7z ou RAR (RAR5), ative Dividir em volumes nativos e informe o tamanho por parte em MB. O resumo antes de salvar mostra o formato e o tamanho escolhido. Mantenha todas as partes na mesma pasta: abra o `.zip` final de ZIP dividido, `.7z.001` ou a primeira `.partNN.rar`. Não use Reunir volumes binários para estes formatos. Para editar um conjunto, salve com outro nome: conjuntos existentes são preservados.
+
+RAR exige o executável oficial separado, configurado em Ajustes → Avançado. O link nessa tela leva à RARLAB. RAR é comercial, com período de avaliação, e não é redistribuído dentro do TabajaraZip. A saída é RAR5; RAR4 antigo não é criado. Senhas RAR usam AES-256; ZIP mantém ZipCrypto compatível com unzip tradicional em arquivos únicos. ZIP dividido exige um extrator que suporte volumes, como TabajaraZip/7-Zip.
+
+Automação: `--cli create pacote.rar pasta --format rar --volume-size 100`. `--volume-size MB` também aceita ZIP/7z. A saída é o caminho do arquivo a abrir. `TABAJARA_RAR` permite selecionar o motor na CLI; senhas continuam via `TABAJARA_PASSWORD_STDIN=1` e entrada padrão.

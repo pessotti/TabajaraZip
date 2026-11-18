@@ -8,6 +8,8 @@ enum ArchiveCLI {
             guard let command = args.first else { print(help); return }
             args.removeFirst()
             var format = "zip", level = 5, encrypted = false, include = "", exclude = ""
+            var volumeMB: Int? = nil
+            if let i = args.firstIndex(of:"--volume-size"), i+1 < args.count { guard let value = Int(args[i+1]), value > 0 else { throw ArchiveError("Tamanho de volume inválido.") }; volumeMB = value; args.removeSubrange(i...i+1) }
             if let i = args.firstIndex(of:"--format"), i+1 < args.count { format = args[i+1]; args.removeSubrange(i...i+1) }
             if let i = args.firstIndex(of:"--level"), i+1 < args.count { level = Int(args[i+1]) ?? 5; args.removeSubrange(i...i+1) }
             if let i = args.firstIndex(of:"--include"), i+1 < args.count { include = args[i+1]; args.removeSubrange(i...i+1) }
@@ -42,8 +44,8 @@ enum ArchiveCLI {
                     let (index,resolved) = try ArchiveEngine.resolve(URL(fileURLWithPath:args[1]),in:stage,password:password,control:control)
                     entries = index.entries; source = resolved
                 } else { entries = try ArchiveEngine.scan(Array(args.dropFirst()).map { URL(fileURLWithPath:$0) },prefix:"",staging:stage,control:control) }
-                var options = SaveOptions(); options.format = format; options.level = level; options.encrypt = encrypted; options.include = include; options.exclude = exclude
-                _ = try ArchiveEngine.write(entries:entries,originalEntries:[],archive:source,destination:destination,options:options,password:password,originalPassword:password,expectedStamp:try source.map { try DiskStamp($0) },control:control,progress:{_,_ in}); print(destination.path)
+                var options = SaveOptions(); options.format = format; options.level = level; options.encrypt = encrypted; options.include = include; options.exclude = exclude; options.volumeMB = volumeMB
+                _ = try ArchiveEngine.write(entries:entries,originalEntries:[],archive:source,destination:destination,options:options,password:password,originalPassword:password,expectedStamp:try source.map { try DiskStamp($0) },control:control,progress:{_,_ in}); print(ArchiveEngine.savedURL(destination,options:options).path)
             case "split":
                 guard args.count == 3, let size = Int(args[2]) else { throw ArchiveError(help) }
                 let destination = URL(fileURLWithPath:args[1]); try FileManager.default.createDirectory(at:destination,withIntermediateDirectories:true)
@@ -65,7 +67,8 @@ enum ArchiveCLI {
     --cli convert DESTINO ORIGEM              Converte formatos
     --cli split ARQUIVO PASTA TAMANHO_MB       Divide em .001, .002…
     --cli join PRIMEIRO.001 DESTINO           Reúne volumes
-    Opções: --format zip|7z|tar|tgz|tbz2|txz --level 0|1|5|9
+    Opções: --format zip|7z|rar|tar|tgz|tbz2|txz --level 0|1|5|9
+            --volume-size MB (ZIP/7z/RAR nativos)
             --encrypt --include '*.pdf;*.txt' --exclude '*.tmp'
     Senha: TABAJARA_PASSWORD_STDIN=1, com a senha na primeira linha da entrada padrão.
     """

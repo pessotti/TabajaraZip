@@ -6,6 +6,7 @@ struct AppSettingsView: View {
     @AppStorage("excludeArchiveMetadata") private var excludeMetadata = true
     @AppStorage("appAppearance") private var appearance = "system"
     @State private var resetVisible = false
+    @AppStorage("rarExecutable") private var rarExecutable = ""
     var body: some View {
         VStack(spacing:0) {
             TabView {
@@ -90,7 +91,7 @@ struct AppSettingsView: View {
     var compression: some View {
         Form {
             Section("Padrões para novos arquivos") {
-                Picker("Formato",selection:$preferences.values.format) { ForEach(["zip","7z","tar","tgz","tbz2","txz"],id:\.self) { Text($0.uppercased()).tag($0) } }
+                Picker("Formato",selection:$preferences.values.format) { ForEach(["zip","7z","rar","tar","tgz","tbz2","txz"],id:\.self) { Text($0.uppercased()).tag($0) } }
                 Picker("Compressão",selection:$preferences.values.compression) { Text("Sem compressão").tag(0); Text("Rápida").tag(1); Text("Normal").tag(5); Text("Máxima").tag(9) }
                 Text("As opções do arquivo aberto continuam independentes destes padrões.").font(.caption).foregroundStyle(.secondary)
             }
@@ -116,6 +117,18 @@ struct AppSettingsView: View {
     }
     var advanced: some View {
         Form {
+            Section("Criação de RAR / RAR5") {
+                Text(ArchiveEngine.rarTool == nil ? "Motor RAR não configurado" : "Motor RAR disponível").font(.headline)
+                if !rarExecutable.isEmpty { Text(rarExecutable).font(.caption).textSelection(.enabled) }
+                HStack {
+                    Button("Selecionar executável RAR…") {
+                        let panel = NSOpenPanel(); panel.message = "Selecione o arquivo rar extraído do pacote oficial para macOS."; panel.allowsMultipleSelection = false
+                        if panel.runModal() == .OK, let url = panel.url, FileManager.default.isExecutableFile(atPath:url.path) { rarExecutable = url.path }
+                    }
+                    Link("Baixar RAR oficial",destination:URL(string:"https://www.rarlab.com/download.htm")!)
+                }
+                Text("RAR é uma ferramenta comercial separada, com período de avaliação. Baixe e extraia o pacote para uma pasta permanente e selecione o executável rar. O formato criado é RAR5; a abertura de RAR não exige esta ferramenta.").font(.caption).foregroundStyle(.secondary)
+            }
             Section("Arquivos temporários") {
                 directoryRow(preferences.values.temporaryDirectory) { if let path = preferences.chooseDirectory("Pasta para arquivos temporários",current:preferences.values.temporaryDirectory) { preferences.values.temporaryDirectory = path } }
                 if !preferences.values.temporaryDirectory.isEmpty { Button("Usar pasta temporária do sistema") { preferences.values.temporaryDirectory = "" } }
