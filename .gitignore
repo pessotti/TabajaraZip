@@ -1,0 +1,10 @@
+# Local build and distribution artifacts
+*.app/
+Distribuicao/
+Preview/
+TabajaraZip-*-macOS.zip
+*.dSYM/
+.build/
+.DS_Store
+__MACOSX/
+*.log

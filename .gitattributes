@@ -1,0 +1,4 @@
+*.sh text eol=lf
+*.swift text eol=lf
+# Preserve upstream license/readme bytes and formatting.
+Resources/7-Zip-*.txt -text -whitespace
