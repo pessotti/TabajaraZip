@@ -108,6 +108,8 @@ enum ArchiveEngine {
         guard options.volumeMB != nil else { return destination }
         if options.format == "7z" { return destination.appendingPathExtension("001") }
         guard options.format == "rar" else { return destination }
+        // RAR keeps a plain .rar name when the content fits in one volume.
+        if fm.fileExists(atPath:destination.path) { return destination }
         let base = destination.deletingPathExtension().lastPathComponent
         let pattern = "^" + NSRegularExpression.escapedPattern(for:base) + "\\.part0*1\\.rar$"
         let files = (try? fm.contentsOfDirectory(at:destination.deletingLastPathComponent(),includingPropertiesForKeys:nil)) ?? []
@@ -495,6 +497,7 @@ enum ArchiveEngine {
         let targets = parts.map { destination.deletingLastPathComponent().appendingPathComponent($0.lastPathComponent) }
         if options.volumeMB != nil {
             if options.format == "rar" {
+                guard !fm.fileExists(atPath:destination.path) else { throw ArchiveError("Já existe um RAR com esse nome. Escolha outro nome para os volumes.") }
                 let base = NSRegularExpression.escapedPattern(for:destination.deletingPathExtension().lastPathComponent)
                 let existing = try fm.contentsOfDirectory(at:destination.deletingLastPathComponent(),includingPropertiesForKeys:nil)
                 guard !existing.contains(where:{ $0.lastPathComponent.range(of:"^" + base + "\\.part[0-9]+\\.rar$",options:.regularExpression) != nil }) else { throw ArchiveError("Já existe um conjunto RAR com esse nome. Escolha outro nome.") }

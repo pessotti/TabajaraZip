@@ -1,4 +1,4 @@
-# Implementação do roadmap — TabajaraZip 2.6.0
+# Implementação do roadmap — TabajaraZip 2.6.1
 
 | Etapa proposta | Implementado |
 | --- | --- |
@@ -53,7 +53,7 @@
 - Resumo de removidos com toda a linha clicável.
 - Cópia de teste isolada encerrada; testes posteriores não geram ícone no Dock.
 
-## RAR5 e volumes nativos — 2.6.0
+## RAR5 e volumes nativos — 2.6.1
 
 - Criação/conversão RAR5, senha com AES-256, compressão e filtros.
 - Volumes nativos em ZIP, 7z e RAR, incluindo numeração RAR com mais de dez partes.

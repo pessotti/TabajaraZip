@@ -50,6 +50,15 @@ import Security
   let convertedIndex = try ArchiveEngine.write(entries:plainIndex.entries,originalEntries:plainIndex.entries,archive:plain,destination:converted,options:options,password:nil,originalPassword:nil,expectedStamp:try DiskStamp(plain),control:token,progress:{_,_ in})
   guard Set(convertedIndex.entries.map(\.path)) == Set(plainIndex.entries.map(\.path)) else { throw ArchiveError("unchanged entries lost converting to native volumes") }
   print("PASS conversion from existing unencrypted 7z preserves unchanged entries")
+  let tinyFile = root.appendingPathComponent("tiny.txt"); try Data("tiny".utf8).write(to:tinyFile)
+  let tinyEntries = try ArchiveEngine.scan([tinyFile],prefix:"",staging:stage,control:token)
+  for format in ["rar","zip","7z"] {
+   options.format = format; options.encrypt = false; options.volumeMB = 1
+   let tiny = root.appendingPathComponent("tiny." + format)
+   _ = try ArchiveEngine.write(entries:tinyEntries,originalEntries:[],archive:nil,destination:tiny,options:options,password:nil,originalPassword:nil,expectedStamp:nil,control:token,progress:{_,_ in})
+   try ArchiveEngine.test(ArchiveEngine.savedURL(tiny,options:options),password:nil,control:token)
+  }
+  print("PASS native volume option when contents fit in one part")
   let cancelled = JobControl(); cancelled.cancel()
   let cancelledDest = root.appendingPathComponent("cancelled.7z")
   do { _ = try ArchiveEngine.write(entries:entries,originalEntries:[],archive:nil,destination:cancelledDest,options:options,password:"abc123",originalPassword:nil,expectedStamp:nil,control:cancelled,progress:{_,_ in}); throw NSError(domain:"cancel accepted",code:1) } catch is CancellationError { }

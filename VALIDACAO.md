@@ -74,7 +74,7 @@ Os testes do código das ações nativas passaram; a descoberta e execução des
 - Dois ZIPs fictícios foram abertos pela entrega de eventos do Launch Services em uma cópia isolada; a cópia foi encerrada para manter apenas o aplicativo original ativo no Dock.
 - Fechamento encerra também o Quick Look pertencente à janela, sem interromper outras janelas.
 
-## Versão 2.6.0 — RAR5 e volumes nativos
+## Versão 2.6.1 — RAR5 e volumes nativos
 
 - Motor oficial RAR macOS ARM64 7.23 testado como ferramenta externa, sem inclusão no bundle/repositório.
 - `test-native-volumes.sh`: RAR5 com assinatura binária correta, senha via stdin, Unicode, nomes com caracteres curingas literais, pastas vazias e 11 volumes com numeração preenchida com zero.

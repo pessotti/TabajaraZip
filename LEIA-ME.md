@@ -130,7 +130,7 @@ O motor incluído é a distribuição oficial 7-Zip 26.06 para macOS arm64, exec
 
 O botão Extrair abre sempre o menu de opções, inclusive ao clicar no ícone. Para criar uma subpasta, use a ação explícita Extrair em pasta com o nome do arquivo; essa opção não faz parte das preferências gerais.
 
-## RAR5 e volumes nativos (2.6.0)
+## RAR5 e volumes nativos (2.6.1)
 
 Abra Opções do arquivo, selecione ZIP, 7z ou RAR (RAR5), ative Dividir em volumes nativos e informe o tamanho por parte em MB. O resumo antes de salvar mostra o formato e o tamanho escolhido. Mantenha todas as partes na mesma pasta: abra o `.zip` final de ZIP dividido, `.7z.001` ou a primeira `.partNN.rar`. Não use Reunir volumes binários para estes formatos. Para editar um conjunto, salve com outro nome: conjuntos existentes são preservados.
 
