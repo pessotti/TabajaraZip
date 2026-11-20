@@ -163,10 +163,11 @@ struct ArchiveDragLabel: NSViewRepresentable {
                 try await Task.detached(priority:.userInitiated) {
                     let temp = try ArchiveEngine.workspace(); defer { try? FileManager.default.removeItem(at:temp) }
                     try ArchiveEngine.extract(entries:entries,archive:archive,password:password,destination:temp,conflict:.ask,control:control,progress:{ value,text in Task { @MainActor in batch.update(value*0.8,text) } })
-                    guard !FileManager.default.fileExists(atPath:url.path) else { throw ArchiveError("O Finder escolheu um destino que já existe: \(url.lastPathComponent)") }
-                    do {
-                        try ArchiveEngine.copy(temp.appendingPathComponent(root.name),to:url,control:control,progress:{ value,text in Task { @MainActor in batch.update(0.8+value*0.2,"Copiando para o Finder: " + text) } })
-                    } catch { try? FileManager.default.removeItem(at:url); throw error }
+                    guard !ArchiveEngine.itemExists(url) else { throw ArchiveError("O Finder escolheu um destino que já existe: \(url.lastPathComponent)") }
+                    let transaction = try ArchiveEngine.workspace(in:url.deletingLastPathComponent()); defer { ArchiveEngine.removeTemporary(transaction) }
+                    let pending = transaction.appendingPathComponent(root.name)
+                    try ArchiveEngine.copy(temp.appendingPathComponent(root.name),to:pending,control:control,progress:{ value,text in Task { @MainActor in batch.update(0.8+value*0.2,"Copiando para o Finder: " + text) } })
+                    try control.check(); try ArchiveEngine.publishNewItem(pending,to:url)
                 }.value
                 completionHandler(nil); batch.finish(nil)
             } catch { completionHandler(error); batch.finish(error) }

@@ -20,13 +20,14 @@ struct SaveSummary: Sendable {
     init(entries: [ArchiveEntry], original: [ArchiveEntry], options: SaveOptions, excludeMetadata: Bool) {
         let wanted = ArchiveEngine.filtered(entries,options:options,excludeMetadata:excludeMetadata)
         let kept = Set(wanted.map(\.path)), old = Dictionary(uniqueKeysWithValues:original.map { ($0.path,$0) })
+        let oldBySource = Dictionary(uniqueKeysWithValues:original.map { ($0.original ?? $0.path,$0) })
         let excluded = entries.filter { !kept.contains($0.path) }
         let excludedOriginals = Set(excluded.compactMap(\.original) + excluded.map(\.path))
         var matched = Set<String>(), changes: [SaveChange] = []
         for entry in wanted {
-            if let path = entry.original, old[path] != nil {
-                matched.insert(path)
-                if path != entry.path { changes.append(SaveChange(kind:.renamed,path:entry.path,previousPath:path)) }
+            if let source = entry.original, let previous = oldBySource[source] {
+                matched.insert(previous.path)
+                if previous.path != entry.path { changes.append(SaveChange(kind:.renamed,path:entry.path,previousPath:previous.path)) }
                 else if entry.staged != nil { changes.append(SaveChange(kind:.modified,path:entry.path)) }
             } else if let previous = old[entry.path] {
                 matched.insert(previous.path)

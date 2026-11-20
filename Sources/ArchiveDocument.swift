@@ -341,8 +341,10 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
         let new: URL
         do { new = try newSession() } catch { fail(error); return }
         job("Lendo índice do arquivo…", work: { control,update in
-            let (index,source) = try ArchiveEngine.resolve(url,in:new,password:supplied,control:control)
-            return (index,source,try DiskStamp(url),try DiskStamp(source))
+            do {
+                let (index,source) = try ArchiveEngine.resolve(url,in:new,password:supplied,control:control)
+                return (index,source,try DiskStamp(url),try DiskStamp(source))
+            } catch { ArchiveEngine.removeTemporary(new); throw error }
         }, done: { [weak self] index,source,stamp,contentStamp in
             guard let self else { return }; self.clearOldSession(); self.session = new
             self.archiveURL = url; self.contentArchive = source; self.entries = index.entries; self.originalEntries = index.entries
@@ -789,6 +791,10 @@ struct ConflictDetails: Sendable {
         return Self(name:entry.name,directory:entry.directory,bytes:bytes,modified:entry.modified)
     }
     static func disk(_ url: URL, control: JobControl) throws -> Self {
+        let attributes = try FileManager.default.attributesOfItem(atPath:url.path)
+        if attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+            return Self(name:url.lastPathComponent,directory:false,bytes:(attributes[.size] as? NSNumber)?.int64Value ?? 0,modified:attributes[.modificationDate] as? Date)
+        }
         let values = try url.resourceValues(forKeys:[.isDirectoryKey,.fileSizeKey,.contentModificationDateKey,.isSymbolicLinkKey])
         var bytes = Int64(values.fileSize ?? 0)
         if values.isDirectory == true {

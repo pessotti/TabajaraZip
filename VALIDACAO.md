@@ -114,3 +114,22 @@ Os testes do código das ações nativas passaram; a descoberta e execução des
 - Corrigida a rejeição indevida de nomes POSIX contendo `:`, incluindo logs IPv6 como `php_errors_::1.log`.
 - Prefixos de unidade Windows, caminhos absolutos, travessia `..`, barras invertidas e caracteres de controle continuam bloqueados.
 - `test-colon-names.sh`: compactação, extração em lote/individual e exclusão preservam nomes com dois-pontos em arquivos e pastas; testes usam somente conteúdo sintético.
+
+## Versão 2.6.6 — Varredura de compactação e extração
+
+Problemas reproduzidos e corrigidos:
+
+- TARs com a raiz `.` e membros `./...` eram recusados. A leitura agora separa o caminho seguro de destino do nome original usado pelo motor.
+- ZIPs DOS/Windows com separadores invertidos eram recusados. A normalização aplica-se aos formatos Windows reconhecidos, mantendo a proteção contra caminhos absolutos, unidades, travessia e colisões de nomes.
+- Links simbólicos quebrados no destino não eram considerados conflitos e podiam ser seguidos na escrita. A cópia agora cria arquivos de forma exclusiva, o tratamento de conflitos reconhece o link e a publicação do resultado não escreve através dele.
+- Cancelamento após substituições repetidas do mesmo nome podia restaurar a cópia intermediária e perder o original. O controle identifica saídas da própria operação e mantém a cópia real anterior.
+- Falha na restauração podia apagar a cópia de segurança durante a limpeza. O journal fica no sistema de arquivos do destino; se a restauração falhar, as cópias originais permanecem e seu endereço é informado.
+- Falhas ao abrir arquivos deixavam pastas de trabalho órfãs. A pasta recém-criada agora é removida sem afetar a sessão anterior.
+- Extração por arrastar para o Finder também publica a saída preparada, sem apagar um arquivo preexistente caso a cópia/publicação falhe.
+
+Validação:
+
+- `test-audit.sh`: TAR/ZIP com `./`, ZIP Windows, extração e regravação, resumo sem alterações falsas, rejeição de travessia/unidades/aliases, arquivos especiais, links quebrados, conflitos, publicação sem sobrescrita, cancelamento com nomes repetidos, preservação do backup quando há falha de restauração e limpeza de abertura falha.
+- Matriz manual de ZIP, 7z, TAR, TGZ, TBZ2 e TXZ nos níveis 0/1/9, além do nível 5 coberto na suíte do motor: todos passaram.
+- Suítes completas de motor/documentos/Atalhos, compatibilidade ZIP, resumo, preferências, extração em lote, edição grande, nomes com dois-pontos, volumes ZIP/7z/RAR, diagnóstico, arrastar e múltiplas janelas passaram.
+- Testes de falha e compatibilidade utilizam exclusivamente dados sintéticos em pastas temporárias; nenhum arquivo original do usuário foi modificado.

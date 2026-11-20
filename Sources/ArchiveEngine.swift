@@ -201,13 +201,17 @@ enum ArchiveEngine {
     }
     static func removeTemporary(_ url: URL) {
         do { try fm.removeItem(at:url) }
-        catch { if fm.fileExists(atPath:url.path) { DiagnosticLog.record("temporary-cleanup",error:error,context:["path":url.path]) } }
+        catch {
+            let value = error as NSError
+            let missing = (value.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError,NSFileReadNoSuchFileError].contains(value.code)) || (value.domain == NSPOSIXErrorDomain && value.code == Int(ENOENT))
+            if !missing { DiagnosticLog.record("temporary-cleanup",error:error,context:["path":url.path]) }
+        }
     }
     static func workspace(in parent: URL? = nil) throws -> URL {
         let custom = UserDefaults.standard.string(forKey:"customTemporaryDirectory") ?? ""
         let root = custom.isEmpty ? fm.temporaryDirectory : URL(fileURLWithPath:custom)
         let u = (parent ?? root).appendingPathComponent("Tabajara-" + UUID().uuidString)
-        try fm.createDirectory(at: u, withIntermediateDirectories: true); return u
+        try fm.createDirectory(at:u,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700]); return u
     }
     @discardableResult static func run(_ args: [String], at: URL? = nil, password: String? = nil,
                                       output: URL? = nil, executable: URL? = nil, control: JobControl = JobControl(), progress: JobProgress = { _,_ in }) throws -> String {
@@ -274,6 +278,17 @@ enum ArchiveEngine {
         }
         return path
     }
+    static func archivePath(_ raw: String, windowsSeparators: Bool = false) throws -> String {
+        var path = windowsSeparators ? raw.replacingOccurrences(of:"\\",with:"/") : raw
+        while path.hasPrefix("./") { path.removeFirst(2) }
+        return try validatePath(path)
+    }
+    static func isArchiveRoot(_ raw: String, windowsSeparators: Bool = false) -> Bool {
+        guard !raw.isEmpty else { return false }
+        var path = windowsSeparators ? raw.replacingOccurrences(of:"\\",with:"/") : raw
+        while path.hasPrefix("./") { path.removeFirst(2) }
+        return path.isEmpty || path == "."
+    }
     static func collisionKey(_ path: String) -> String { path.decomposedStringWithCanonicalMapping.lowercased() }
     static func validateEntries(_ entries: [ArchiveEntry]) throws {
         var seen = Set<String>(), files = Set<String>()
@@ -290,7 +305,7 @@ enum ArchiveEngine {
             }
         }
     }
-    static func validateZIPDirectory(_ url: URL) throws {
+    static func validateZIPDirectory(_ url: URL, control: JobControl = JobControl()) throws {
         let file = try FileHandle(forReadingFrom:url); defer { try? file.close() }
         let size = try file.seekToEnd(); guard size >= 22 else { throw ArchiveError("ZIP incompleto.") }
         let start = size > 65_557 ? size - 65_557 : 0
@@ -319,16 +334,16 @@ enum ArchiveEngine {
         guard count <= 2_000_000, offset <= size else { throw ArchiveError("Diretório ZIP inválido ou grande demais para esta versão.") }
         try file.seek(toOffset:offset)
         for _ in 0..<count {
+            try control.check()
             let header = try file.read(upToCount:46) ?? Data()
             guard header.count == 46, number(header,0,4) == 0x02014b50 else { throw ArchiveError("Diretório ZIP inválido.") }
             let length = Int(number(header,28,2)), extra = number(header,30,2), comment = number(header,32,2)
             let name = try file.read(upToCount:length) ?? Data()
             guard name.count == length, !name.contains(where:{ $0 < 32 || $0 == 127 }) else { throw ArchiveError("O ZIP contém nomes com caracteres de controle não suportados.") }
-            if let decoded = String(data:name,encoding:.utf8) { _ = try validatePath(decoded) }
-            else {
-                // ASCII path separators remain unambiguous in legacy ZIP name encodings.
-                let ascii = String(decoding:name,as:UTF8.self); _ = try validatePath(ascii)
-            }
+            let windows = [0,10,14].contains(Int(header[5]))
+            let decoded = String(data:name,encoding:.utf8) ?? String(decoding:name,as:UTF8.self)
+            let normalized = windows ? decoded.replacingOccurrences(of:"\\",with:"/") : decoded
+            if !(normalized.hasSuffix("/") && isArchiveRoot(normalized)) { _ = try archivePath(decoded,windowsSeparators:windows) }
             let current = try file.offset(); try file.seek(toOffset:current + extra + comment)
         }
     }
@@ -338,7 +353,7 @@ enum ArchiveEngine {
         let header = sections.first ?? ""
         let detected = header.components(separatedBy: "\n").first(where: { $0.hasPrefix("Type = ") }).map { String($0.dropFirst(7)).lowercased() } ?? url.pathExtension.lowercased()
         let raw = sections.count > 1 ? sections.dropFirst().joined(separator: "\n----------\n") : ""
-        if detected == "zip", url.pathExtension.lowercased() != "001" { try validateZIPDirectory(url) }
+        if detected == "zip", url.pathExtension.lowercased() != "001" { try validateZIPDirectory(url,control:control) }
         let date = DateFormatter(); date.locale = Locale(identifier: "en_US_POSIX"); date.dateFormat = "yyyy-MM-dd HH:mm:ss"
         var entries: [ArchiveEntry] = []
         for block in raw.components(separatedBy: "\n\n") where !block.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -353,14 +368,18 @@ enum ArchiveEngine {
                 fields[key] = String(line[sep.upperBound...])
             }
             guard let rawPath = fields["Path"] else { continue }
-            let path = try validatePath(rawPath)
             let attributes = fields["Attributes"] ?? ""
             let mode = fields["Mode"] ?? ""
-            let blockedLink = !(fields["Symbolic Link"] ?? "").isEmpty || !(fields["Hard Link"] ?? "").isEmpty || attributes.contains("l") || mode.hasPrefix("l") || attributes.contains("p") || attributes.contains("s")
+            let blockedLink = !(fields["Symbolic Link"] ?? "").isEmpty || !(fields["Hard Link"] ?? "").isEmpty || attributes.contains("l") || ["l","p","s","b","c"].contains(where:{ mode.hasPrefix($0) }) || attributes.contains("p") || attributes.contains("s")
             let isDir = fields["Folder"] == "+" || attributes.hasPrefix("D") || mode.hasPrefix("d") || rawPath.hasSuffix("/")
+            let windows = detected == "zip" && ["FAT","NTFS","VFAT"].contains(fields["Host OS"] ?? "")
+            if isDir && !blockedLink && isArchiveRoot(rawPath,windowsSeparators:windows) { continue }
+            let path = try archivePath(rawPath,windowsSeparators:windows)
+            var original = rawPath
+            if original.hasSuffix("/") || (windows && original.hasSuffix("\\")) { original.removeLast() }
             entries.append(ArchiveEntry(path: path, directory: isDir, size: Int64(fields["Size"] ?? "0") ?? 0,
                                         packed: Int64(fields["Packed Size"] ?? ""), modified: date.date(from: String((fields["Modified"] ?? "").prefix(19))),
-                                        encrypted: fields["Encrypted"] == "+", encryptionMethod:fields["Method"], blockedLink:blockedLink, original: path, checksumCRC32:fields["CRC"].flatMap { UInt32($0,radix:16) }))
+                                        encrypted: fields["Encrypted"] == "+", encryptionMethod:fields["Method"], blockedLink:blockedLink, original: original, checksumCRC32:fields["CRC"].flatMap { UInt32($0,radix:16) }))
         }
         if entries.isEmpty && ["gzip", "bzip2", "xz"].contains(detected) {
             var name = url.deletingPathExtension().lastPathComponent
@@ -404,17 +423,20 @@ enum ArchiveEngine {
     /// Copies in bounded chunks so Cancel also works for large uncompressed/staged files.
     static func copy(_ source: URL, to destination: URL, control: JobControl, progress: JobProgress = {_,_ in}) throws {
         try control.check()
-        let values = try source.resourceValues(forKeys:[.isDirectoryKey,.isSymbolicLinkKey,.fileSizeKey,.contentModificationDateKey])
+        let values = try source.resourceValues(forKeys:[.isDirectoryKey,.isSymbolicLinkKey,.isRegularFileKey,.fileSizeKey,.contentModificationDateKey])
         guard values.isSymbolicLink != true else { throw ArchiveError("Links não são copiados.") }
         if values.isDirectory == true {
+            if itemExists(destination), (try destination.resourceValues(forKeys:[.isSymbolicLinkKey])).isSymbolicLink == true { throw ArchiveError("O destino é um link simbólico: \(destination.lastPathComponent)") }
             try fm.createDirectory(at:destination,withIntermediateDirectories:true)
             for child in try fm.contentsOfDirectory(at:source,includingPropertiesForKeys:nil) {
                 try copy(child,to:destination.appendingPathComponent(child.lastPathComponent),control:control,progress:progress)
             }
         } else {
+            guard values.isRegularFile == true else { throw ArchiveError("Arquivos especiais não podem ser copiados: \(source.lastPathComponent)") }
             let input = try FileHandle(forReadingFrom:source); defer { try? input.close() }
-            guard fm.createFile(atPath:destination.path,contents:nil) else { throw ArchiveError("Não foi possível criar \(destination.lastPathComponent).") }
-            let output = try FileHandle(forWritingTo:destination); defer { try? output.close() }
+            let descriptor = open(destination.path,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0o666)
+            guard descriptor >= 0 else { throw NSError(domain:NSPOSIXErrorDomain,code:Int(errno),userInfo:[NSLocalizedDescriptionKey:"Não foi possível criar \(destination.lastPathComponent) sem substituir um item existente.",NSFilePathErrorKey:destination.path]) }
+            let output = FileHandle(fileDescriptor:descriptor,closeOnDealloc:true); defer { try? output.close() }
             var bytes: Int64 = 0
             while true {
                 try control.check()
@@ -439,7 +461,7 @@ enum ArchiveEngine {
             let selection = try workspace(); defer { removeTemporary(selection) }
             var filter: [String] = []
             if !original.isEmpty {
-                _ = try validatePath(original)
+                _ = try archivePath(original,windowsSeparators:original.contains("\\"))
                 let names = selection.appendingPathComponent("member.txt")
                 try (original + "\n").write(to:names,atomically:true,encoding:.utf8)
                 filter = ["-scsUTF-8","-r-","-i@" + names.path]
@@ -467,15 +489,15 @@ enum ArchiveEngine {
         let index = try list(archive,password:password,control:control,preserveOrder:true)
         guard index.format == "zip" else { return [] }
         let groups = Dictionary(grouping:candidates,by:{ $0.original! })
-        let members = index.entries.filter { !$0.directory && groups[$0.path] != nil }
+        let members = index.entries.filter { !$0.directory && groups[$0.original ?? $0.path] != nil }
         guard members.count == groups.count else { throw ArchiveError("O conteúdo do ZIP mudou. Reabra o arquivo antes de extrair.") }
         guard members.allSatisfy({ !$0.blockedLink && $0.checksumCRC32 != nil && !($0.encryptionMethod ?? "").lowercased().contains("aes") }) else { return [] }
         for member in members {
-            guard groups[member.path]!.allSatisfy({ $0.size == member.size && ($0.checksumCRC32 == nil || $0.checksumCRC32 == member.checksumCRC32) }) else { throw ArchiveError("O tamanho de um item mudou no ZIP. Reabra o arquivo.") }
+            guard groups[member.original ?? member.path]!.allSatisfy({ $0.size == member.size && ($0.checksumCRC32 == nil || $0.checksumCRC32 == member.checksumCRC32) }) else { throw ArchiveError("O tamanho de um item mudou no ZIP. Reabra o arquivo.") }
         }
         let temp = try workspace(in:stage); defer { removeTemporary(temp) }
         let names = temp.appendingPathComponent("members.txt"), stream = temp.appendingPathComponent("contents")
-        try (members.map(\.path).joined(separator:"\n") + "\n").write(to:names,atomically:true,encoding:.utf8)
+        try (members.map { $0.original ?? $0.path }.joined(separator:"\n") + "\n").write(to:names,atomically:true,encoding:.utf8)
         let weight = Double(candidates.count) / Double(max(entries.count,1)) * 0.8
         progress(0,"Descompactando \(members.count) arquivos…")
         try run(["x","-so","-spd","-scsUTF-8","-r-","-i@" + names.path,"--",archive.path],password:password,output:stream,control:control,progress:{ value,_ in progress(value * weight * 0.75,"Descompactando \(members.count) arquivos…") })
@@ -488,7 +510,7 @@ enum ArchiveEngine {
         var materialized = Set<String>()
         for (i,member) in members.enumerated() {
             try control.check()
-            let targets = groups[member.path]!, entry = targets[0]
+            let targets = groups[member.original ?? member.path]!, entry = targets[0]
             let target = stage.appendingPathComponent(entry.path)
             try fm.createDirectory(at:target.deletingLastPathComponent(),withIntermediateDirectories:true)
             guard fm.createFile(atPath:target.path,contents:nil) else { throw ArchiveError("Não foi possível preparar \(entry.name).") }
@@ -596,6 +618,7 @@ enum ArchiveEngine {
             && !originalFiles.isEmpty && originalFiles.allSatisfy { $0.encrypted && ($0.encryptionMethod ?? "").lowercased().contains("zipcrypto") }
             && wanted.allSatisfy { $0.staged == nil && $0.original == $0.path }
         let incremental = options.volumeMB == nil && archive != nil && originalFormat == options.format && ["zip","7z"].contains(options.format)
+            && !originalEntries.contains(where:{ $0.original != nil && $0.original != $0.path })
             && ((!options.encrypt && !originalEntries.contains(where: \.encrypted)) || encryptedDeletion)
         let changed = incremental ? wanted.filter { $0.staged != nil || $0.original != $0.path } : wanted
         let prepared = try materializeZIPBatch(changed,archive:archive,password:originalPassword,stage:input,control:control,progress:{ value,text in progress(value * 0.625,text) })
@@ -619,7 +642,7 @@ enum ArchiveEngine {
             let removed = originalEntries.filter { old in
                 guard old.original != nil else { return false }
                 return wantedByPath[old.path]?.original != old.path || wantedByPath[old.path]?.staged != nil
-            }.map(\.path)
+            }.compactMap(\.original)
             if !removed.isEmpty {
                 // List files avoid ARG_MAX and preserve Unicode exactly. Collapse complete deleted
                 // subtrees; never delete a directory recursively while a retained member needs it.
@@ -729,9 +752,29 @@ enum ArchiveEngine {
         } catch { for target in moved { removeTemporary(target) }; throw error }
     }
     enum Conflict: String, CaseIterable, Codable, Sendable { case ask = "Perguntar", replace = "Substituir", skip = "Ignorar", keepBoth = "Manter ambos" }
+    static func itemExists(_ url: URL) -> Bool {
+        var info = stat()
+        return lstat(url.path,&info) == 0
+    }
+    static func publishNewItem(_ source: URL, to destination: URL) throws {
+        if renamex_np(source.path,destination.path,UInt32(RENAME_EXCL)) == 0 { return }
+        let failure = errno
+        // Some external/network filesystems do not implement RENAME_EXCL.
+        if failure == ENOTSUP || failure == EINVAL {
+            guard !itemExists(destination) else { throw NSError(domain:NSPOSIXErrorDomain,code:Int(EEXIST),userInfo:[NSFilePathErrorKey:destination.path]) }
+            try fm.moveItem(at:source,to:destination)
+            return
+        }
+        throw NSError(domain:NSPOSIXErrorDomain,code:Int(failure),userInfo:[NSLocalizedDescriptionKey:"Não foi possível publicar \(destination.lastPathComponent) sem substituir um item existente.",NSFilePathErrorKey:destination.path])
+    }
+    static func sameDiskItem(_ a: URL, _ b: URL) -> Bool {
+        var left = stat(), right = stat()
+        guard lstat(a.path,&left) == 0, lstat(b.path,&right) == 0 else { return false }
+        return left.st_dev == right.st_dev && left.st_ino == right.st_ino
+    }
     static func unique(_ url: URL) -> URL {
         var n = 2; var result = url
-        while fm.fileExists(atPath: result.path) {
+        while itemExists(result) {
             let ext = url.pathExtension; let base = url.deletingPathExtension().lastPathComponent
             result = url.deletingLastPathComponent().appendingPathComponent(base + " (\(n))" + (ext.isEmpty ? "" : "." + ext)); n += 1
         }
@@ -757,14 +800,18 @@ enum ArchiveEngine {
             return true
         }
         let destinations = roots.map { destination.appendingPathComponent($0.name) }
-        if conflict == .ask, resolveConflict == nil, let existing = destinations.first(where: { fm.fileExists(atPath: $0.path) }) { throw ArchiveError("Já existe \(existing.lastPathComponent). Escolha como tratar arquivos existentes nas opções de extração.") }
+        if conflict == .ask, resolveConflict == nil, let existing = destinations.first(where: { itemExists($0) }) { throw ArchiveError("Já existe \(existing.lastPathComponent). Escolha como tratar arquivos existentes nas opções de extração.") }
+        try fm.createDirectory(at:destination,withIntermediateDirectories:true)
         // Commit uses a rollback journal, including replacements, so failures preserve destination contents.
-        var created: [URL] = []; var backups: [(URL,URL)] = []
+        var created: [URL] = []; var createdByName: [String:[URL]] = [:]; var backups: [(URL,URL)] = []
+        let journal = destination.appendingPathComponent(".TabajaraZip-backups-" + UUID().uuidString)
+        var retainJournal = false
+        defer { if !retainJournal && itemExists(journal) { removeTemporary(journal) } }
         do {
             for (i,e) in roots.enumerated() {
                 try control.check()
                 let source = stage.appendingPathComponent(e.path); var target = destinations[i]
-                if fm.fileExists(atPath: target.path) {
+                if itemExists(target) {
                     let choice: Conflict
                     if conflict == .ask {
                         guard let resolveConflict else { throw ArchiveError("Já existe \(target.lastPathComponent). Escolha como tratar arquivos existentes nas opções de extração.") }
@@ -774,17 +821,35 @@ enum ArchiveEngine {
                     if choice == .skip { continue }
                     if choice == .keepBoth { target = unique(target) }
                     else {
-                        let backup = stage.appendingPathComponent("backup-" + UUID().uuidString)
-                        try fm.moveItem(at: target, to: backup); backups.append((backup,target))
+                        let priorOutput = createdByName[collisionKey(target.path)]?.contains(where:{ sameDiskItem($0,target) }) ?? false
+                        if priorOutput {
+                            created.removeAll(where:{ sameDiskItem($0,target) })
+                            createdByName[collisionKey(target.path)] = nil
+                            try fm.removeItem(at:target)
+                        }
+                        else {
+                            try fm.createDirectory(at:journal,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+                            let backup = journal.appendingPathComponent("original-" + UUID().uuidString)
+                            try fm.moveItem(at:target,to:backup); backups.append((backup,target))
+                        }
                     }
                 }
-                created.append(target)
-                try copy(source,to:target,control:control,progress:{ value,_ in progress(0.8 + (Double(i)+value)/Double(max(roots.count,1))*0.19,"Copiando \(i+1)/\(roots.count): \(e.name)") })
+                try fm.createDirectory(at:journal,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+                let pending = journal.appendingPathComponent("incoming-" + UUID().uuidString)
+                defer { if itemExists(pending) { removeTemporary(pending) } }
+                try copy(source,to:pending,control:control,progress:{ value,_ in progress(0.8 + (Double(i)+value)/Double(max(roots.count,1))*0.19,"Copiando \(i+1)/\(roots.count): \(e.name)") })
+                try control.check()
+                try publishNewItem(pending,to:target)
+                created.append(target); createdByName[collisionKey(target.path),default:[]].append(target)
             }
             try control.check()
         } catch {
             for u in created.reversed() { removeTemporary(u) }
-            for (backup,target) in backups.reversed() { do { try fm.moveItem(at:backup,to:target) } catch { DiagnosticLog.record("extraction-rollback",error:error,context:["backup":backup.path,"target":target.path]) } }
+            for (backup,target) in backups.reversed() {
+                do { try fm.moveItem(at:backup,to:target) }
+                catch { retainJournal = true; DiagnosticLog.record("extraction-rollback",error:error,context:["backup":backup.path,"target":target.path]) }
+            }
+            if retainJournal { throw ArchiveError("Não foi possível restaurar todos os itens do destino. As cópias originais foram preservadas em \(journal.path).") }
             throw error
         }
         progress(1, "Extração concluída")

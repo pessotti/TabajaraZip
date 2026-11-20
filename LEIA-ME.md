@@ -147,3 +147,9 @@ Falhas de gravação do próprio diagnóstico aparecem no Console do macOS. A ex
 ## Edição de pastas grandes (2.6.4)
 
 Remoção de pastas e seleções grandes mantém o resumo de alterações atualizado sem recalculá-lo a cada atualização de progresso. ZIPs sem senha aproveitam a atualização incremental: os arquivos restantes não precisam ser extraídos e recompactados. A exclusão pura em ZIP ZipCrypto também pode preservar o conteúdo comprimido quando a senha permanece igual. Trocar a senha, converter o formato ou fazer alterações que exijam reconstrução utiliza preparação em fluxo único sempre que possível. A verificação final e a substituição segura do original continuam ativas; o tempo ainda depende do tamanho total e da velocidade do disco.
+
+## Compatibilidade e recuperação após falhas (2.6.6)
+
+TARs com caminhos relativos `./...` e ZIPs DOS/Windows com separadores invertidos podem ser abertos, extraídos e regravados. Os nomes originais são usados para localizar os membros; a saída utiliza caminhos normalizados e verificados.
+
+Conflitos de extração incluem links simbólicos quebrados. Itens existentes são preservados até que a operação possa ser concluída. Se um erro impedir a restauração automática, o app mantém as cópias originais em uma pasta oculta `.TabajaraZip-backups-...` no destino e informa o endereço. Preserve essa pasta para recuperar os arquivos. O diagnóstico registra o ocorrido.
