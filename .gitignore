@@ -8,3 +8,6 @@ TabajaraZip-*-macOS.zip
 .DS_Store
 __MACOSX/
 *.log
+
+# Local diagnostics may contain private file names and paths.
+logs/

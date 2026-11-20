@@ -2,6 +2,7 @@ import Foundation
 
 enum ArchiveCLI {
     static func main() {
+        var diagnosticPassword: String?
         do {
             var args = Array(CommandLine.arguments.dropFirst())
             args.removeAll { $0 == "--cli" }
@@ -17,6 +18,7 @@ enum ArchiveCLI {
             if let i = args.firstIndex(of:"--encrypt") { encrypted = true; args.remove(at:i) }
             // A password is accepted on stdin, never as a command-line argument or in presets/journals.
             let password = ProcessInfo.processInfo.environment["TABAJARA_PASSWORD_STDIN"] == "1" ? readLine(strippingNewline:true) : nil
+            diagnosticPassword = password
             let control = JobControl()
             switch command {
             case "list":
@@ -55,7 +57,7 @@ enum ArchiveCLI {
                 try ArchiveEngine.join(URL(fileURLWithPath:args[0]),destination:destination,control:control); print("OK")
             default: print(help)
             }
-        } catch { FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1) }
+        } catch { DiagnosticLog.record("cli",error:error,secrets:diagnosticPassword.map { [$0] } ?? []); FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1) }
     }
     static let help = """
     TabajaraZip — automação

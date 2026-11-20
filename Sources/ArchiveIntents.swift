@@ -7,6 +7,7 @@ struct CompressTabajaraIntent: AppIntent {
     static var description = IntentDescription("Cria um ZIP a partir dos arquivos recebidos, sem abrir a interface.")
     @Parameter(title:"Arquivos") var files:[IntentFile]
     func perform() async throws -> some IntentResult & ReturnsValue<IntentFile> {
+        do {
         let incoming = files
         let output = try await Task.detached {
             let workspace = try ArchiveEngine.workspace()
@@ -28,6 +29,7 @@ struct CompressTabajaraIntent: AppIntent {
             return zip
         }.value
         return .result(value:IntentFile(fileURL:output,filename:output.lastPathComponent,type:.zip))
+        } catch { DiagnosticLog.record("shortcut-compress",error:error); throw error }
     }
 }
 struct ExtractTabajaraIntent: AppIntent {
@@ -35,6 +37,7 @@ struct ExtractTabajaraIntent: AppIntent {
     static var description = IntentDescription("Extrai os itens de um arquivo compactado e os devolve ao Atalhos. Arquivos com senha devem ser abertos no app.")
     @Parameter(title:"Arquivo compactado") var archive:IntentFile
     func perform() async throws -> some IntentResult & ReturnsValue<[IntentFile]> {
+        do {
         let incoming = archive
         let urls = try await Task.detached {
             let workspace = try ArchiveEngine.workspace()
@@ -47,6 +50,7 @@ struct ExtractTabajaraIntent: AppIntent {
             return try FileManager.default.contentsOfDirectory(at:output,includingPropertiesForKeys:nil)
         }.value
         return .result(value:urls.map { IntentFile(fileURL:$0,filename:$0.lastPathComponent) })
+        } catch { DiagnosticLog.record("shortcut-extract",error:error); throw error }
     }
 }
 struct TabajaraShortcuts: AppShortcutsProvider {

@@ -2,10 +2,83 @@ import Foundation
 import CryptoKit
 import Darwin
 
+// Shared by the app, CLI, Shortcuts and Quick Look without extra dependencies.
+final class DiagnosticLog: @unchecked Sendable {
+    static let shared = DiagnosticLog(directory: ProcessInfo.processInfo.environment["TABAJARA_LOG_DIRECTORY"].map { URL(fileURLWithPath:$0) } ?? defaultDirectory)
+    static var defaultDirectory: URL {
+        let home = getpwuid(getuid()).map { URL(fileURLWithPath:String(cString:$0.pointee.pw_dir)) } ?? FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent("Projetos/tabajarazip/logs",isDirectory:true)
+    }
+    let directory: URL
+    let maximumBytes: Int
+    let backups: Int
+    private let lock = NSLock()
+    init(directory: URL, maximumBytes: Int = 5 * 1024 * 1024, backups: Int = 4) {
+        self.directory = directory; self.maximumBytes = max(1,maximumBytes); self.backups = max(1,backups)
+    }
+    static func record(_ operation: String, error: Error, context: [String:String] = [:], secrets: [String] = []) {
+        let ns = error as NSError
+        shared.write(operation, message:error is CancellationError ? "Operação cancelada" : (error as? ArchiveError)?.diagnosticMessage ?? error.localizedDescription,
+                     context:context.merging(["errorDomain":ns.domain,"errorCode":String(ns.code)]) { _,new in new },
+                     secrets:secrets, level:error is CancellationError ? "cancelled" : "error")
+    }
+    func write(_ operation: String, message: String, context: [String:String] = [:], secrets: [String] = [], level: String = "error") {
+        lock.lock(); defer { lock.unlock() }
+        func clean(_ value: String) -> String {
+            var value = value
+            for secret in secrets.filter({ !$0.isEmpty }).sorted(by:{ $0.count > $1.count }) { value = value.replacingOccurrences(of:secret,with:"[senha omitida]") }
+            return String(value.prefix(16_384))
+        }
+        let bundle = Bundle.main
+        let record: [String:Any] = ["timestamp":ISO8601DateFormatter().string(from:Date()),"level":level,
+            "operation":clean(operation),"message":clean(message),"context":context.mapValues(clean),
+            "appVersion":bundle.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "development",
+            "appBuild":bundle.object(forInfoDictionaryKey:"CFBundleVersion") as? String ?? "development",
+            "process":ProcessInfo.processInfo.processName,"pid":ProcessInfo.processInfo.processIdentifier,
+            "system":ProcessInfo.processInfo.operatingSystemVersionString]
+        do {
+            let fm = FileManager.default
+            try fm.createDirectory(at:directory,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+            let lockURL = directory.appendingPathComponent(".diagnostics.lock")
+            let fd = open(lockURL.path,O_CREAT | O_RDWR | O_NOFOLLOW,0o600)
+            guard fd >= 0 else { throw POSIXError(.EACCES) }
+            defer { _ = flock(fd,LOCK_UN); close(fd) }
+            guard flock(fd,LOCK_EX) == 0 else { throw POSIXError(.EIO) }
+            var data = try JSONSerialization.data(withJSONObject:record,options:[.sortedKeys]); data.append(0x0a)
+            let current = directory.appendingPathComponent("TabajaraZip.jsonl")
+            let size = (try? current.resourceValues(forKeys:[.fileSizeKey]).fileSize) ?? 0
+            if size > 0 && size + data.count > maximumBytes {
+                let oldest = directory.appendingPathComponent("TabajaraZip.\(backups).jsonl")
+                if fm.fileExists(atPath:oldest.path) { try fm.removeItem(at:oldest) }
+                if backups > 1 { for n in stride(from:backups-1,through:1,by:-1) {
+                    let source = directory.appendingPathComponent("TabajaraZip.\(n).jsonl")
+                    if fm.fileExists(atPath:source.path) { try fm.moveItem(at:source,to:directory.appendingPathComponent("TabajaraZip.\(n+1).jsonl")) }
+                } }
+                try fm.moveItem(at:current,to:directory.appendingPathComponent("TabajaraZip.1.jsonl"))
+            }
+            let output = open(current.path,O_CREAT | O_WRONLY | O_APPEND | O_NOFOLLOW,0o600)
+            guard output >= 0 else { throw POSIXError(.EACCES) }
+            defer { close(output) }
+            try data.withUnsafeBytes { bytes in
+                var offset = 0
+                while offset < bytes.count {
+                    let count = Darwin.write(output,bytes.baseAddress!.advanced(by:offset),bytes.count-offset)
+                    if count < 0 { if errno == EINTR { continue }; throw POSIXError(.EIO) }
+                    guard count > 0 else { throw POSIXError(.EIO) }; offset += count
+                }
+            }
+        } catch {
+            // Logging must never interrupt an archive operation or recursively log itself.
+            NSLog("TabajaraZip: não foi possível gravar diagnóstico em %@ (%@). Evento: %@",directory.path,String(describing:error),clean(operation))
+        }
+    }
+}
+
 struct ArchiveError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
-    init(_ message: String) { self.message = message }
+    let diagnosticMessage: String
+    init(_ message: String, diagnosticMessage: String? = nil) { self.message = message; self.diagnosticMessage = diagnosticMessage ?? message }
 }
 
 final class JobControl: @unchecked Sendable {
@@ -125,6 +198,10 @@ enum ArchiveEngine {
         if fm.isExecutableFile(atPath: parent.path) { return parent }
         return URL(fileURLWithPath: "/opt/homebrew/bin/7zz")
     }
+    static func removeTemporary(_ url: URL) {
+        do { try fm.removeItem(at:url) }
+        catch { if fm.fileExists(atPath:url.path) { DiagnosticLog.record("temporary-cleanup",error:error,context:["path":url.path]) } }
+    }
     static func workspace(in parent: URL? = nil) throws -> URL {
         let custom = UserDefaults.standard.string(forKey:"customTemporaryDirectory") ?? ""
         let root = custom.isEmpty ? fm.temporaryDirectory : URL(fileURLWithPath:custom)
@@ -133,47 +210,55 @@ enum ArchiveEngine {
     }
     @discardableResult static func run(_ args: [String], at: URL? = nil, password: String? = nil,
                                       output: URL? = nil, executable: URL? = nil, control: JobControl = JobControl(), progress: JobProgress = { _,_ in }) throws -> String {
-        try control.check()
-        guard fm.isExecutableFile(atPath: (executable ?? tool).path) else { throw ArchiveError("O motor 7-Zip não foi encontrado no aplicativo.") }
-        let temp = try workspace(); defer { try? fm.removeItem(at: temp) }
-        let log = output ?? temp.appendingPathComponent("stdout")
-        let errors = temp.appendingPathComponent("stderr")
-        fm.createFile(atPath: log.path, contents: nil); fm.createFile(atPath: errors.path, contents: nil)
-        let stdout = try FileHandle(forWritingTo: log), stderr = try FileHandle(forWritingTo: errors)
-        defer { try? stdout.close(); try? stderr.close() }
-        let process = Process(); process.executableURL = executable ?? tool; process.arguments = executable == nil ? [args[0], "-sccUTF-8", "-bsp2"] + Array(args.dropFirst()) : args
-        process.currentDirectoryURL = at
-        var env = ProcessInfo.processInfo.environment; env["LC_ALL"] = "en_US.UTF-8"; process.environment = env
-        process.standardOutput = stdout; process.standardError = stderr
-        let input = Pipe(); process.standardInput = input
-        try process.run()
-        if let password { try? input.fileHandleForWriting.write(contentsOf: Data((password + "\n" + password + "\n").utf8)) }
-        try? input.fileHandleForWriting.close()
-        while process.isRunning {
-            if control.cancelled {
-                process.terminate()
-                for _ in 0..<20 { if !process.isRunning { break }; Thread.sleep(forTimeInterval: 0.05) }
-                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-                process.waitUntilExit(); throw CancellationError()
+        var processStatus: Int32?
+        do {
+            try control.check()
+            guard fm.isExecutableFile(atPath: (executable ?? tool).path) else { throw ArchiveError("O motor 7-Zip não foi encontrado no aplicativo.") }
+            let temp = try workspace(); defer { removeTemporary(temp) }
+            let log = output ?? temp.appendingPathComponent("stdout")
+            let errors = temp.appendingPathComponent("stderr")
+            fm.createFile(atPath: log.path, contents: nil); fm.createFile(atPath: errors.path, contents: nil)
+            let stdout = try FileHandle(forWritingTo: log), stderr = try FileHandle(forWritingTo: errors)
+            defer { try? stdout.close(); try? stderr.close() }
+            let process = Process(); process.executableURL = executable ?? tool; process.arguments = executable == nil ? [args[0], "-sccUTF-8", "-bsp2"] + Array(args.dropFirst()) : args
+            process.currentDirectoryURL = at
+            var env = ProcessInfo.processInfo.environment; env["LC_ALL"] = "en_US.UTF-8"; process.environment = env
+            process.standardOutput = stdout; process.standardError = stderr
+            let input = Pipe(); process.standardInput = input
+            try process.run()
+            if let password { do { try input.fileHandleForWriting.write(contentsOf: Data((password + "\n" + password + "\n").utf8)) } catch { DiagnosticLog.record("engine-password-input",error:error,secrets:[password]) } }
+            try? input.fileHandleForWriting.close()
+            while process.isRunning {
+                if control.cancelled {
+                    process.terminate()
+                    for _ in 0..<20 { if !process.isRunning { break }; Thread.sleep(forTimeInterval: 0.05) }
+                    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    process.waitUntilExit(); throw CancellationError()
+                }
+                if let reader = try? FileHandle(forReadingFrom: errors) {
+                    let end = (try? reader.seekToEnd()) ?? 0
+                    try? reader.seek(toOffset: end > 1024 ? end - 1024 : 0)
+                    if let data = try? reader.readToEnd(), let text = String(data:data,encoding:.utf8),
+                       let range = text.range(of:"[0-9]{1,3}%",options:[.regularExpression,.backwards]),
+                       let number = Double(text[range].dropLast()) { progress(min(number/100,1), "Processando…") }
+                    try? reader.close()
+                }
+                Thread.sleep(forTimeInterval: 0.10)
             }
-            if let reader = try? FileHandle(forReadingFrom: errors) {
-                let end = (try? reader.seekToEnd()) ?? 0
-                try? reader.seek(toOffset: end > 1024 ? end - 1024 : 0)
-                if let data = try? reader.readToEnd(), let text = String(data:data,encoding:.utf8),
-                   let range = text.range(of:"[0-9]{1,3}%",options:[.regularExpression,.backwards]),
-                   let number = Double(text[range].dropLast()) { progress(min(number/100,1), "Processando…") }
-                try? reader.close()
+            process.waitUntilExit(); processStatus = process.terminationStatus; try stdout.synchronize(); try stderr.synchronize(); try control.check()
+            let message = String(decoding: (try? Data(contentsOf: errors)) ?? Data(), as: UTF8.self)
+            guard process.terminationStatus == 0 else {
+                DiagnosticLog.shared.write("archive-engine-exit",message:message.isEmpty ? "O motor terminou com erro; saída padrão omitida para proteger o conteúdo." : message,context:["tool":(executable ?? tool).lastPathComponent,"command":args.first ?? "","exitCode":String(process.terminationStatus)],secrets:password.map { [$0] } ?? [])
+                let info = message.isEmpty ? String(decoding: (try? Data(contentsOf: log)) ?? Data(), as: UTF8.self) : message
+                if info.lowercased().contains("password") || info.lowercased().contains("encrypted") { throw ArchiveError("Senha necessária ou incorreta. Informe a senha e tente novamente.") }
+                throw ArchiveError(String(info.suffix(2400)).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Não foi possível processar o arquivo." : String(info.suffix(2400)), diagnosticMessage:"O motor terminou com erro; detalhes no evento archive-engine-exit.")
             }
-            Thread.sleep(forTimeInterval: 0.10)
+            return output == nil ? String(decoding: try Data(contentsOf: log), as: UTF8.self) : ""
+        } catch {
+            DiagnosticLog.record("archive-engine",error:processStatus != nil && processStatus != 0 ? ArchiveError("Falha do motor; detalhes no evento archive-engine-exit.") : error,context:["tool":(executable ?? tool).lastPathComponent,"command":args.first ?? "", "exitCode":processStatus.map(String.init) ?? "not-started"],secrets:password.map { [$0] } ?? [])
+            throw error
         }
-        process.waitUntilExit(); try stdout.synchronize(); try stderr.synchronize(); try control.check()
-        let message = String(decoding: (try? Data(contentsOf: errors)) ?? Data(), as: UTF8.self)
-        guard process.terminationStatus == 0 else {
-            let info = message.isEmpty ? String(decoding: (try? Data(contentsOf: log)) ?? Data(), as: UTF8.self) : message
-            if info.lowercased().contains("password") || info.lowercased().contains("encrypted") { throw ArchiveError("Senha necessária ou incorreta. Informe a senha e tente novamente.") }
-            throw ArchiveError(String(info.suffix(2400)).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Não foi possível processar o arquivo." : String(info.suffix(2400)))
-        }
-        return output == nil ? String(decoding: try Data(contentsOf: log), as: UTF8.self) : ""
+
     }
     static func validatePath(_ raw: String) throws -> String {
         let path = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
@@ -357,7 +442,7 @@ enum ArchiveEngine {
     static func scan(_ urls: [URL], prefix: String, staging: URL, control: JobControl, progress: JobProgress = {_,_ in}) throws -> [ArchiveEntry] {
         var result: [ArchiveEntry] = []
         var stagedFiles: [URL] = []; var success = false
-        defer { if !success { for url in stagedFiles { try? fm.removeItem(at:url) } } }
+        defer { if !success { for url in stagedFiles { removeTemporary(url) } } }
         func visit(_ url: URL, path: String) throws {
             try control.check(); _ = try validatePath(path)
             let v = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
@@ -408,7 +493,7 @@ enum ArchiveEngine {
         if options.encrypt && (password?.isEmpty != false || !["zip","7z","rar"].contains(options.format)) { throw ArchiveError("Defina uma senha para criar ZIP, 7z ou RAR criptografado.") }
         if options.encrypt && options.format == "zip", let password, !password.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value <= 126 }) { throw ArchiveError("Para ZIP compatível com unzip, use uma senha sem acentos ou emojis. O formato 7z aceita senhas Unicode.") }
         if let archive, let expectedStamp, try DiskStamp(archive) != expectedStamp { throw ArchiveError("O arquivo original foi alterado por outro programa. Reabra-o antes de salvar.") }
-        let temp = try workspace(in: destination.deletingLastPathComponent()); defer { try? fm.removeItem(at: temp) }
+        let temp = try workspace(in: destination.deletingLastPathComponent()); defer { removeTemporary(temp) }
         let output = temp.appendingPathComponent("result." + options.format)
         let input = temp.appendingPathComponent("input"); try fm.createDirectory(at: input, withIntermediateDirectories: true)
         let wanted = filtered(entries, options: options, excludeMetadata: excludeMetadata)
@@ -514,7 +599,7 @@ enum ArchiveEngine {
                 else { try fm.moveItem(at:part,to:target); moved.append(target) }
             }
         } catch {
-            for target in moved { try? fm.removeItem(at:target) }
+            for target in moved { removeTemporary(target) }
             throw error
         }
         progress(1,"Arquivo salvo e verificado")
@@ -527,7 +612,7 @@ enum ArchiveEngine {
         var moved: [URL] = []
         do {
             for (part,target) in zip(parts,targets) { try control.check(); try fm.moveItem(at:part,to:target); moved.append(target) }
-        } catch { for target in moved { try? fm.removeItem(at:target) }; throw error }
+        } catch { for target in moved { removeTemporary(target) }; throw error }
     }
     enum Conflict: String, CaseIterable, Codable, Sendable { case ask = "Perguntar", replace = "Substituir", skip = "Ignorar", keepBoth = "Manter ambos" }
     static func unique(_ url: URL) -> URL {
@@ -541,7 +626,7 @@ enum ArchiveEngine {
     static func extract(entries: [ArchiveEntry], archive: URL?, password: String?, destination: URL,
                         conflict: Conflict, control: JobControl, progress: JobProgress, resolveConflict: (@Sendable (ArchiveEntry, URL) throws -> Conflict)? = nil) throws {
         try validateEntries(entries)
-        let stage = try workspace(); defer { try? fm.removeItem(at: stage) }
+        let stage = try workspace(); defer { removeTemporary(stage) }
         // All contents are prepared first: wrong passwords/cancellation cannot leave half-decoded files at the destination.
         for (i,e) in entries.enumerated() {
             progress(Double(i) / Double(max(entries.count,1)) * 0.8, "Extraindo \(i+1)/\(entries.count): \(e.name)")
@@ -573,15 +658,15 @@ enum ArchiveEngine {
             }
             try control.check()
         } catch {
-            for u in created.reversed() { try? fm.removeItem(at: u) }
-            for (backup,target) in backups.reversed() { try? fm.moveItem(at: backup, to: target) }
+            for u in created.reversed() { removeTemporary(u) }
+            for (backup,target) in backups.reversed() { do { try fm.moveItem(at:backup,to:target) } catch { DiagnosticLog.record("extraction-rollback",error:error,context:["backup":backup.path,"target":target.path]) } }
             throw error
         }
         progress(1, "Extração concluída")
     }
     static func split(_ url: URL, destination: URL, megabytes: Int, control: JobControl, progress: JobProgress) throws {
         guard megabytes >= 1 else { throw ArchiveError("Tamanho de volume inválido.") }
-        let temp = try workspace(in: destination); defer { try? fm.removeItem(at: temp) }
+        let temp = try workspace(in: destination); defer { removeTemporary(temp) }
         let input = try FileHandle(forReadingFrom: url); defer { try? input.close() }
         let total = try DiskStamp(url).size; var done: Int64 = 0; var number = 1
         while done < total {
@@ -602,11 +687,11 @@ enum ArchiveEngine {
         guard parts.allSatisfy({ !fm.fileExists(atPath: destination.appendingPathComponent($0.lastPathComponent).path) }) else { throw ArchiveError("Já existem volumes com esse nome no destino.") }
         var moved: [URL] = []
         do { for p in parts { let dest = destination.appendingPathComponent(p.lastPathComponent); try fm.moveItem(at: p,to:dest); moved.append(dest) } }
-        catch { for p in moved { try? fm.removeItem(at:p) }; throw error }
+        catch { for p in moved { removeTemporary(p) }; throw error }
     }
     static func repairZIP(_ source: URL, destination: URL, control: JobControl) throws -> Int {
         guard source.standardizedFileURL.resolvingSymlinksInPath() != destination.standardizedFileURL.resolvingSymlinksInPath() else { throw ArchiveError("A recuperação deve ser salva em outro arquivo.") }
-        let temp = try workspace(in:destination.deletingLastPathComponent()); defer { try? fm.removeItem(at:temp) }
+        let temp = try workspace(in:destination.deletingLastPathComponent()); defer { removeTemporary(temp) }
         let result = temp.appendingPathComponent("recovered.zip")
         try run(["-FF",source.path,"--out",result.path],password:"y",executable:URL(fileURLWithPath:"/usr/bin/zip"),control:control)
         let index = try list(result,control:control)
@@ -620,7 +705,7 @@ enum ArchiveEngine {
         let base = first.deletingPathExtension()
         let parts = try fm.contentsOfDirectory(at: first.deletingLastPathComponent(), includingPropertiesForKeys:nil).filter { $0.deletingPathExtension().lastPathComponent == base.lastPathComponent && Int($0.pathExtension) != nil }.sorted { (Int($0.pathExtension) ?? 0) < (Int($1.pathExtension) ?? 0) }
         guard !parts.isEmpty, parts.enumerated().allSatisfy({ Int($0.element.pathExtension) == $0.offset + 1 }) else { throw ArchiveError("A sequência de volumes contém partes ausentes.") }
-        let temp = try workspace(in: destination.deletingLastPathComponent()); defer { try? fm.removeItem(at:temp) }
+        let temp = try workspace(in: destination.deletingLastPathComponent()); defer { removeTemporary(temp) }
         let result = temp.appendingPathComponent("joined"); fm.createFile(atPath:result.path,contents:nil)
         let out = try FileHandle(forWritingTo:result); defer { try? out.close() }
         for p in parts {

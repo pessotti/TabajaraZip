@@ -123,7 +123,10 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
     @Published var dragPreparing = false
     @Published var progress = 0.0
     @Published var status = "Tá no ZIP, tá no papo."
-    @Published var error: String?
+    private var errorAlreadyLogged = false
+    @Published var error: String? {
+        didSet { if let error, !errorAlreadyLogged { DiagnosticLog.shared.write("document-error",message:error,context:["archive":archiveURL?.path ?? "novo arquivo","operation":status],secrets:[password,savePassword].compactMap { $0 }) } }
+    }
     @Published var message: String?
     @Published var options = SaveOptions()
     @Published var optionsVisible = false
@@ -236,7 +239,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
     var workingDirectory: URL {
         let root = preferences.temporaryDirectory.isEmpty ? fm.temporaryDirectory : URL(fileURLWithPath:preferences.temporaryDirectory)
         let u = storageOverride ?? root.appendingPathComponent("TabajaraZIP-WorkingCopies")
-        try? fm.createDirectory(at:u,withIntermediateDirectories:true); return u
+        do { try fm.createDirectory(at:u,withIntermediateDirectories:true) } catch { DiagnosticLog.record("working-directory",error:error,context:["path":u.path]) }; return u
     }
     override convenience init() { self.init(storage: nil) }
     init(storage: URL?, preferences store: AppPreferences? = nil) {
@@ -257,7 +260,9 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
         if let data = preferencesStore.defaults.data(forKey:"presets"), let saved = try? JSONDecoder().decode([SavedPreset].self,from:data) { presets = saved }
         timer = Timer.scheduledTimer(withTimeInterval:3,repeats:true) { [weak self] _ in Task { @MainActor in self?.checkExternalEdits() } }
     }
-    func fail(_ error: Error) {
+    func fail(_ error: Error, operation: String? = nil) {
+        errorAlreadyLogged = true; defer { errorAlreadyLogged = false }
+        DiagnosticLog.record("document-operation",error:error,context:["archive":archiveURL?.path ?? "novo arquivo","operation":operation ?? status],secrets:[password,savePassword].compactMap { $0 })
         if error is CancellationError { status = "Operação cancelada. Alterações desta operação foram desfeitas." }
         else { self.error = error.localizedDescription; status = "Operação interrompida" }
     }
@@ -272,7 +277,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
             do {
                 let result = try await Task.detached(priority:.userInitiated) { try work(token,update) }.value
                 busy = false; cancelling = false; progress = 1; status = "Pronto. Serviço Tabajara concluído."; done(result)
-            } catch { busy = false; cancelling = false; fail(error) }
+            } catch { busy = false; cancelling = false; fail(error,operation:title) }
         }
     }
     func preferredSaveOptions() -> SaveOptions {
@@ -294,7 +299,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
         return true
     }
     func clearOldSession() {
-        if let session { try? fm.removeItem(at:session) }; session = nil
+        if let session { ArchiveEngine.removeTemporary(session) }; session = nil
         external = [:]; previewURL = nil; previewText = nil; previewGeneration = UUID(); previewTask?.cancel()
         previewVisible = preferences.previewByDefault; conflict = preferences.conflict
         expandedFolders = []
@@ -590,7 +595,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
             do {
                 let hash = try ArchiveEngine.sha256(url,control:JobControl())
                 self.external[entry.path] = ExternalEdit(path:entry.path,url:url,hash:hash)
-                if self.preferences.editorApplication.isEmpty { NSWorkspace.shared.open(url) }
+                if self.preferences.editorApplication.isEmpty { if !NSWorkspace.shared.open(url) { throw ArchiveError("Não foi possível abrir o arquivo no aplicativo padrão.") } }
                 else {
                     let app = URL(fileURLWithPath:self.preferences.editorApplication)
                     NSWorkspace.shared.open([url],withApplicationAt:app,configuration:NSWorkspace.OpenConfiguration()) { _,error in
@@ -658,7 +663,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
                 guard !Task.isCancelled, previewGeneration == generation else { return }
                 previewURL = url
                 if entry.size <= 500_000, let data = try? Data(contentsOf:url), !data.contains(0) { previewText = String(data:data,encoding:.utf8) }
-            } catch { /* Preview failures stay non-modal; Open exposes actionable errors. */ }
+            } catch { DiagnosticLog.record("preview",error:error,context:["archive":self.archiveURL?.path ?? "","entry":entry.path],secrets:pass.map { [$0] } ?? []) }
         }
     }
     func quickLook(_ clicked:ArchiveEntry? = nil) {
@@ -726,7 +731,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
                     catch { try? FileManager.default.removeItem(at:folder); throw error }
                     log.append("✓ " + url.lastPathComponent)
                 } catch is CancellationError { throw CancellationError() }
-                catch { log.append("✗ \(url.lastPathComponent): \(error.localizedDescription)") }
+                catch { DiagnosticLog.record("batch-extract",error:error,context:["archive":url.path]); log.append("✗ \(url.lastPathComponent): \(error.localizedDescription)") }
             }
             return log
         },done:{ [weak self] in self?.batchLog = $0; self?.message = $0.joined(separator:"\n") })
@@ -751,7 +756,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
                     _ = try ArchiveEngine.write(entries:entries,originalEntries:[],archive:nil,destination:target,options:opts,password:pass,originalPassword:nil,expectedStamp:nil,control:control,progress:{_,_ in})
                     log.append("✓ " + target.lastPathComponent)
                 } catch is CancellationError { throw CancellationError() }
-                catch { log.append("✗ \(url.lastPathComponent): \(error.localizedDescription)") }
+                catch { DiagnosticLog.record("batch-compress",error:error,context:["source":url.path],secrets:pass.map { [$0] } ?? []); log.append("✗ \(url.lastPathComponent): \(error.localizedDescription)") }
             }
             return log
         },done:{ [weak self] in self?.batchLog = $0; self?.message = $0.joined(separator:"\n") })

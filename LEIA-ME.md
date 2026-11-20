@@ -137,3 +137,9 @@ Abra Opções do arquivo, selecione ZIP, 7z ou RAR (RAR5), ative Dividir em volu
 RAR exige o executável oficial separado, configurado em Ajustes → Avançado. O link nessa tela leva à RARLAB. RAR é comercial, com período de avaliação, e não é redistribuído dentro do TabajaraZip. A saída é RAR5; RAR4 antigo não é criado. Senhas RAR usam AES-256; ZIP mantém ZipCrypto compatível com unzip tradicional em arquivos únicos. ZIP dividido exige um extrator que suporte volumes, como TabajaraZip/7-Zip.
 
 Automação: `--cli create pacote.rar pasta --format rar --volume-size 100`. `--volume-size MB` também aceita ZIP/7z. A saída é o caminho do arquivo a abrir. `TABAJARA_RAR` permite selecionar o motor na CLI; senhas continuam via `TABAJARA_PASSWORD_STDIN=1` e entrada padrão.
+
+## Diagnóstico de erros (2.6.2)
+
+Os diagnósticos são gravados automaticamente em `~/Projetos/tabajarazip/logs/TabajaraZip.jsonl`. Abra pelo menu Ajuda → Abrir pasta de logs. Arquivos `.1.jsonl` a `.4.jsonl` guardam os registros anteriores, com rotação em aproximadamente 5 MB por arquivo. Os registros incluem data UTC, versão do app, operação, processo, códigos e mensagens de erro. Cancelamentos são identificados separadamente. A pasta pode conter nomes e caminhos privados, mas não registra conteúdo dos arquivos, entrada de senha ou lista completa de argumentos. Senhas conhecidas são ocultadas. Os logs permanecem após fechar o app e não são enviados ao GitHub.
+
+Falhas de gravação do próprio diagnóstico aparecem no Console do macOS. A extensão Quick Look pode estar impedida de acessar a pasta por seu isolamento. Travamentos fatais/encerramentos forçados continuam sujeitos aos relatórios de falha do macOS.

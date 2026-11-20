@@ -457,6 +457,10 @@ struct TabajaraZipApp:App {
                 Button("Reunir volumes…",action:doc.joinVolumes).disabled(doc.busy || doc.saveReview != nil)
             }
             CommandGroup(after:.help) {
+                Button("Abrir pasta de logs") {
+                    do { try FileManager.default.createDirectory(at:DiagnosticLog.defaultDirectory,withIntermediateDirectories:true); NSWorkspace.shared.open(DiagnosticLog.defaultDirectory) }
+                    catch { doc.fail(error) }
+                }
                 Button("Guia de uso e automação") { if let url = Bundle.main.url(forResource:"Guia",withExtension:"md") { NSWorkspace.shared.open(url) } }
             }
         }
@@ -465,6 +469,10 @@ struct TabajaraZipApp:App {
 #if !SNAPSHOT_TEST
 @main struct Launcher {
     static func main() {
+        DiagnosticLog.shared.write("application-start",message:"Diagnóstico iniciado",level:"info")
+        NSSetUncaughtExceptionHandler { exception in
+            DiagnosticLog.shared.write("uncaught-exception",message:exception.name.rawValue,context:["stack":exception.callStackSymbols.joined(separator:"\n")])
+        }
         if CommandLine.arguments.contains("--cli") { ArchiveCLI.main() }
         else { TabajaraZipApp.main() }
     }

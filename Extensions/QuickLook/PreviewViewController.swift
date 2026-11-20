@@ -15,7 +15,7 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
                         (e.directory ? "📁 " : "   ") + e.path + (e.directory ? "/" : "  •  " + (e.size < 0 ? "" : ByteCountFormatter.string(fromByteCount:e.size,countStyle:.file)))
                     }
                     text.string = "TABAJARA ZIP — Seus arquivos no aperto!\n\(url.lastPathComponent)\n\(index.entries.count) itens\n\n" + lines.joined(separator:"\n")
-                case .failure(let error): text.string = "TabajaraZip\n\n" + error.localizedDescription + "\n\nAbra o arquivo no app para informar uma senha ou ver os detalhes."
+                case .failure(let error): DiagnosticLog.record("quick-look",error:error,context:["archive":url.path]); text.string = "TabajaraZip\n\n" + error.localizedDescription + "\n\nAbra o arquivo no app para informar uma senha ou ver os detalhes."
                 }
                 scroll.documentView = text; self.view.addSubview(scroll); handler(nil)
             }

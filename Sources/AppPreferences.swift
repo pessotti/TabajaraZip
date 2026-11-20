@@ -33,10 +33,14 @@ struct PreferenceValues: Codable, Equatable {
     @Published var values: PreferenceValues { didSet { persist() } }
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        values = defaults.data(forKey:Self.key).flatMap { try? JSONDecoder().decode(PreferenceValues.self,from:$0) } ?? PreferenceValues()
+        if let data = defaults.data(forKey:Self.key) {
+            do { values = try JSONDecoder().decode(PreferenceValues.self,from:data) }
+            catch { values = PreferenceValues(); DiagnosticLog.record("preferences-decode",error:error) }
+        } else { values = PreferenceValues() }
     }
     private func persist() {
-        if let data = try? JSONEncoder().encode(values) { defaults.set(data,forKey:Self.key) }
+        do { defaults.set(try JSONEncoder().encode(values),forKey:Self.key) }
+        catch { DiagnosticLog.record("preferences-encode",error:error) }
         defaults.set(values.temporaryDirectory,forKey:"customTemporaryDirectory")
     }
     func reset() {

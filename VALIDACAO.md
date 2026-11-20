@@ -82,3 +82,10 @@ Os testes do código das ações nativas passaram; a descoberta e execução des
 - Conflito de nomes preserva todos os volumes anteriores; cancelamento não publica saídas; configurações salvas antigas continuam decodificando.
 - `test.sh`: motor, documentos, Atalhos, limpeza global, compatibilidade ZipCrypto/unzip e resumo antes de salvar sem regressões.
 - Preferências e múltiplas janelas verificadas pelos testes específicos.
+
+## Versão 2.6.2 — Diagnósticos persistentes
+
+- `test-diagnostics.sh`: registros JSON concorrentes, permissões privadas, rotação limitada, falha do logger sem interromper a operação, persistência de erro do motor e das camadas externas.
+- Senhas e saída padrão simulando conteúdo privado não aparecem nos arquivos de diagnóstico, inclusive ao registrar novamente um erro propagado.
+- Logger compartilhado pela interface, CLI, Atalhos, Quick Look, prévias, lote, preferências e limpeza/rollback; aviso no Console se o destino não puder ser escrito.
+- Logs locais excluídos explicitamente do Git e da distribuição.

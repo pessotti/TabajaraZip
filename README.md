@@ -8,7 +8,7 @@ Editor de arquivos compactados nativo para macOS, com interface em português e 
 
 ## Download
 
-Baixe o aplicativo pronto na página de [Releases](https://github.com/pessotti/TabajaraZip/releases/latest). A versão atual é **2.6.1**.
+Baixe o aplicativo pronto na página de [Releases](https://github.com/pessotti/TabajaraZip/releases/latest). A versão atual é **2.6.2**.
 
 Requer **Mac com Apple Silicon e macOS 14 ou posterior**. O aplicativo distribuído usa assinatura local e não é notarizado pela Apple.
 
@@ -56,6 +56,7 @@ Após compilar:
 ./test-workspace.sh
 ./test-view-snapshots.sh
 ./test-native-volumes.sh  # requer RAR externo configurado ou TABAJARA_RAR
+./test-diagnostics.sh
 ```
 
 Os testes nativos exigem uma sessão gráfica do macOS. Os testes de visualização geram imagens em `/private/tmp/TabajaraViewModes`, sem criar um ícone extra no Dock.
@@ -73,3 +74,9 @@ Os testes nativos exigem uma sessão gráfica do macOS. Os testes de visualizaç
 O código próprio do projeto segue a licença MIT incluída neste repositório. Os componentes do 7-Zip possuem suas próprias licenças, descritas em `Resources/7-Zip-LICENSE.txt`, `Resources/7-Zip-README.txt` e `Resources/LGPL-2.1.txt`; o código-fonte correspondente também está incluído.
 
 Projeto independente, sem afiliação com Organizações Tabajara, WinRAR ou BetterZip.
+
+## Logs de diagnóstico
+
+Erros tratados pelo aplicativo, motores de compactação, prévias, processamento em lote, CLI e Atalhos ficam registrados em `~/Projetos/tabajarazip/logs/TabajaraZip.jsonl`. Cada linha contém data UTC, versão/build, operação, processo, código e detalhes do erro. Use **Ajuda → Abrir pasta de logs**. Há rotação em até cinco arquivos de aproximadamente 5 MB cada; os registros mais antigos são substituídos. Nomes e caminhos podem aparecer; senhas conhecidas são removidas e o conteúdo/saída padrão dos arquivos não é gravado. A pasta `logs/` não é versionada nem incluída no aplicativo distribuído.
+
+Se o sistema impedir a gravação (por exemplo, em uma extensão Quick Look isolada pelo macOS), o aviso é enviado ao Console do macOS, sem interromper a operação. Falhas fatais do runtime e encerramentos forçados podem depender dos relatórios de falha do próprio macOS. Para testes isolados, `TABAJARA_LOG_DIRECTORY` altera o destino do processo.
