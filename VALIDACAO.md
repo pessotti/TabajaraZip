@@ -98,3 +98,13 @@ Os testes do código das ações nativas passaram; a descoberta e execução des
 - Teste de regressão sintético com muitos arquivos, seleção parcial, ordem do ZIP, nomes especiais, renomeação, edição em staging, senha e cancelamento.
 - Seleção de membros em listas UTF-8 preserva a normalização Unicode original, evitando conversão automática dos argumentos pelo macOS.
 - Fluxo corrompido de mesmo tamanho é rejeitado pelo CRC antes de modificar o destino; colisões de nomes na extração parcial produzem erro com rollback, sem forçar um resolvedor ausente.
+
+## Versão 2.6.4 — Edição de pastas grandes
+
+- Remoção, desfazer/restaurar e indicadores de alterações reutilizam o resumo até a lista ser modificada; painel de removidos renderizado sob demanda.
+- Seleção de milhares de itens percorre ancestrais, sem comparar todos os caminhos entre si.
+- Gravação incremental usa lista UTF-8 para remoções, sem limite de argumentos, agrupando subpastas completamente removidas e preservando descendentes mantidos.
+- Preparação em fluxo único também usada ao renomear/converter/recriar ZIPs, incluindo gravação e edição com ZipCrypto.
+- Testes com pasta de 4.000 arquivos, seleção individual grande, lista de exclusão acima do limite de argumentos, conteúdo mantido, caches após desfazer/restaurar e cancelamento antes/durante gravação.
+- Em cópia temporária de um ZIP real, remover 1.823 itens atualizou o resumo em 0,1 s; salvar e verificar levou aproximadamente 2,1 s. SHA-256 confirmou o original preservado.
+- Exclusão pura de ZIP ZipCrypto com senha mantida preserva os membros comprimidos, sem extração; troca de senha reconstrói por um único fluxo e a senha nova é verificada.

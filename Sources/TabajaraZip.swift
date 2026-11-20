@@ -292,7 +292,7 @@ struct ContentView: View {
                 }.buttonStyle(.plain).accessibilityValue(removedExpanded ? "Expandido" : "Recolhido")
                 if removedExpanded {
                 ScrollView {
-                    VStack(spacing:4) {
+                    LazyVStack(spacing:4) {
                         ForEach(doc.removedEntries) { entry in
                             HStack { Label(entry.path,systemImage:"minus.circle").strikethrough().lineLimit(1); Spacer(); Button("Restaurar") { doc.restoreRemoved(entry.path) }.disabled(doc.busy || doc.saveReview != nil) }.padding(.vertical,3)
                         }

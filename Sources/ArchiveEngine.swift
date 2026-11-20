@@ -515,8 +515,16 @@ enum ArchiveEngine {
         try control.check()
         return materialized
     }
+    static func isSelectedPath(_ path: String, paths: Set<String>) -> Bool {
+        guard !path.isEmpty, path != "." else { return false }
+        if paths.contains(path) { return true }
+        if paths.count < 8 { return paths.contains { path.hasPrefix($0 + "/") } }
+        var parent = (path as NSString).deletingLastPathComponent
+        while !parent.isEmpty { if paths.contains(parent) { return true }; parent = (parent as NSString).deletingLastPathComponent }
+        return false
+    }
     static func selectedEntries(_ entries: [ArchiveEntry], paths: Set<String>) -> [ArchiveEntry] {
-        paths.isEmpty ? entries : entries.filter { e in paths.contains(e.path) || paths.contains(where: { e.path.hasPrefix($0 + "/") }) }
+        paths.isEmpty ? entries : entries.filter { isSelectedPath($0.path,paths:paths) }
     }
     static func scan(_ urls: [URL], prefix: String, staging: URL, control: JobControl, progress: JobProgress = {_,_ in}) throws -> [ArchiveEntry] {
         var result: [ArchiveEntry] = []
@@ -553,7 +561,9 @@ enum ArchiveEngine {
             return e.directory || options.include.isEmpty || matches(e.path, patterns: options.include)
         }
         if options.include.isEmpty { return files }
-        return files.filter { e in !e.directory || files.contains(where: { !$0.directory && $0.path.hasPrefix(e.path + "/") }) }
+        var parents = Set<String>()
+        for entry in files where !entry.directory { var parent = entry.parent; while !parent.isEmpty { parents.insert(parent); parent = (parent as NSString).deletingLastPathComponent } }
+        return files.filter { !$0.directory || parents.contains($0.path) }
     }
     static func test(_ url: URL, password: String?, control: JobControl) throws {
         try run(["t", "--", url.path], password: password, control: control)
@@ -577,10 +587,17 @@ enum ArchiveEngine {
         let input = temp.appendingPathComponent("input"); try fm.createDirectory(at: input, withIntermediateDirectories: true)
         let wanted = filtered(entries, options: options, excludeMetadata: excludeMetadata)
         let originalFormat = archive?.pathExtension.lowercased()
-        let incremental = options.volumeMB == nil && archive != nil && originalFormat == options.format && ["zip","7z"].contains(options.format) && !options.encrypt && !originalEntries.contains(where: \.encrypted)
+        let originalFiles = originalEntries.filter { !$0.directory }
+        let encryptedDeletion = options.format == "zip" && options.encrypt && password != nil && password == originalPassword
+            && !originalFiles.isEmpty && originalFiles.allSatisfy { $0.encrypted && ($0.encryptionMethod ?? "").lowercased().contains("zipcrypto") }
+            && wanted.allSatisfy { $0.staged == nil && $0.original == $0.path }
+        let incremental = options.volumeMB == nil && archive != nil && originalFormat == options.format && ["zip","7z"].contains(options.format)
+            && ((!options.encrypt && !originalEntries.contains(where: \.encrypted)) || encryptedDeletion)
         let changed = incremental ? wanted.filter { $0.staged != nil || $0.original != $0.path } : wanted
-        for (i,e) in changed.enumerated() {
-            progress(Double(i) / Double(max(changed.count, 1)) * 0.50, "Preparando \(e.name)")
+        let prepared = try materializeZIPBatch(changed,archive:archive,password:originalPassword,stage:input,control:control,progress:{ value,text in progress(value * 0.625,text) })
+        let remaining = changed.filter { !prepared.contains($0.path) }
+        for (i,e) in remaining.enumerated() {
+            progress(Double(prepared.count + i) / Double(max(changed.count,1)) * 0.50, "Preparando \(e.name)")
             try materialize(e, archive: archive, password: originalPassword, to: input.appendingPathComponent(e.path), control: control)
         }
         if options.format == "rar" || (options.format == "7z" && options.volumeMB != nil) {
@@ -599,7 +616,21 @@ enum ArchiveEngine {
                 guard old.original != nil else { return false }
                 return wantedByPath[old.path]?.original != old.path || wantedByPath[old.path]?.staged != nil
             }.map(\.path)
-            if !removed.isEmpty { try run(["d", "-spd", "--", output.path] + removed, control: control) }
+            if !removed.isEmpty {
+                // List files avoid ARG_MAX and preserve Unicode exactly. Collapse complete deleted
+                // subtrees; never delete a directory recursively while a retained member needs it.
+                let retained = wanted.filter { $0.original == $0.path && $0.staged == nil }
+                var retainedParents = Set<String>()
+                for entry in retained { var parent = entry.parent; while !parent.isEmpty { retainedParents.insert(parent); parent = (parent as NSString).deletingLastPathComponent } }
+                let directoryPaths = Set(originalEntries.filter(\.directory).map(\.path))
+                let safeRemoved = Set(removed.filter { !directoryPaths.contains($0) || !retainedParents.contains($0) })
+                let roots = safeRemoved.filter { !isSelectedPath(($0 as NSString).deletingLastPathComponent,paths:safeRemoved) }.sorted()
+                if !roots.isEmpty {
+                    let list = temp.appendingPathComponent("removed.txt")
+                    try (roots.joined(separator:"\n") + "\n").write(to:list,atomically:true,encoding:.utf8)
+                    try run(["d","-spd","-scsUTF-8","-i@" + list.path,"--",output.path],control:control,progress:{ value,_ in progress(0.53 + value * 0.22,"Removendo itens do arquivo…") })
+                }
+            }
             if !changed.isEmpty { try run(["a"] + params + ["--", output.path, "."], at: input, control: control, progress:{ p,_ in progress(0.53 + p * 0.22,"Compactando… \(Int(p*100))%") }) }
         } else if wanted.isEmpty && options.format == "zip" && !options.encrypt {
             try (Data([0x50,0x4b,0x05,0x06]) + Data(repeating: 0, count: 18)).write(to: output)

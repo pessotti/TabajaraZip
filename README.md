@@ -8,7 +8,7 @@ Editor de arquivos compactados nativo para macOS, com interface em português e 
 
 ## Download
 
-Baixe o aplicativo pronto na página de [Releases](https://github.com/pessotti/TabajaraZip/releases/latest). A versão atual é **2.6.3**.
+Baixe o aplicativo pronto na página de [Releases](https://github.com/pessotti/TabajaraZip/releases/latest). A versão atual é **2.6.4**.
 
 Requer **Mac com Apple Silicon e macOS 14 ou posterior**. O aplicativo distribuído usa assinatura local e não é notarizado pela Apple.
 
@@ -58,6 +58,7 @@ Após compilar:
 ./test-native-volumes.sh  # requer RAR externo configurado ou TABAJARA_RAR
 ./test-diagnostics.sh
 ./test-bulk-extraction.sh
+./test-large-edits.sh
 ```
 
 Os testes nativos exigem uma sessão gráfica do macOS. Os testes de visualização geram imagens em `/private/tmp/TabajaraViewModes`, sem criar um ícone extra no Dock.

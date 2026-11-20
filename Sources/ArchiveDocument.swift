@@ -114,7 +114,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
         }
     }
     @Published var archiveURL: URL?
-    @Published var entries: [ArchiveEntry] = []
+    @Published var entries: [ArchiveEntry] = [] { didSet { invalidateChangeCache() } }
     @Published var folder = ""
     @Published var selection = Set<String>()
     @Published var search = ""
@@ -143,10 +143,18 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
     @Published var forwardHistory: [ArchiveLocation] = []
     @Published var cancelling = false
     var progressIndeterminate: Bool { progress < 0 }
-    var pendingChanges: [SaveChange] { SaveSummary(entries:entries,original:originalEntries,options:SaveOptions(),excludeMetadata:false).changes }
+    private var cachedChanges: [SaveChange]?
+    private var cachedRemoved: [ArchiveEntry]?
+    private func invalidateChangeCache() { cachedChanges = nil; cachedRemoved = nil }
+    var pendingChanges: [SaveChange] {
+        if let cachedChanges { return cachedChanges }
+        let result = SaveSummary(entries:entries,original:originalEntries,options:SaveOptions(),excludeMetadata:false).changes
+        cachedChanges = result; return result
+    }
     var removedEntries: [ArchiveEntry] {
+        if let cachedRemoved { return cachedRemoved }
         let removed = Set(pendingChanges.filter { $0.kind == .removed }.map(\.path))
-        return originalEntries.filter { removed.contains($0.path) }
+        let result = originalEntries.filter { removed.contains($0.path) }; cachedRemoved = result; return result
     }
     var breadcrumbs: [String] {
         var result = [""]; var path = ""
@@ -198,7 +206,7 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
     @Published var conflict = ArchiveEngine.Conflict.ask
     @Published var batchLog: [String] = []
     @Published var directMode = false
-    var originalEntries: [ArchiveEntry] = []
+    var originalEntries: [ArchiveEntry] = [] { didSet { invalidateChangeCache() } }
     var stamp: DiskStamp?
     var contentStamp: DiskStamp?
     var contentArchive: URL?
@@ -456,7 +464,8 @@ enum ArchiveViewMode: String, CaseIterable, Identifiable {
     }
     func removeWithoutConfirmation(_ paths: Set<String>) {
         guard !busy, saveReview == nil else { return }
-        change(entries.filter { e in !paths.contains(e.path) && !paths.contains(where:{ e.path.hasPrefix($0 + "/") }) })
+        guard !paths.isEmpty else { return }
+        change(entries.filter { !ArchiveEngine.isSelectedPath($0.path,paths:paths) })
     }
     func setSourcePassword() {
         if let pass = askPassword() { password = pass; updatePreview() }
