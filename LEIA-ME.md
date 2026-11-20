@@ -153,3 +153,7 @@ Remoção de pastas e seleções grandes mantém o resumo de alterações atuali
 TARs com caminhos relativos `./...` e ZIPs DOS/Windows com separadores invertidos podem ser abertos, extraídos e regravados. Os nomes originais são usados para localizar os membros; a saída utiliza caminhos normalizados e verificados.
 
 Conflitos de extração incluem links simbólicos quebrados. Itens existentes são preservados até que a operação possa ser concluída. Se um erro impedir a restauração automática, o app mantém as cópias originais em uma pasta oculta `.TabajaraZip-backups-...` no destino e informa o endereço. Preserve essa pasta para recuperar os arquivos. O diagnóstico registra o ocorrido.
+
+## Permissões e ícones do Finder (2.6.7)
+
+Scripts e arquivos executáveis preservam os bits POSIX de execução ao compactar e extrair; pastas somente leitura também são reconhecidas corretamente. Bits especiais de privilégio não são restaurados. Os nomes especiais `Icon\r` e `._Icon\r` do Finder deixam de bloquear a operação e seus dados são preservados. Nos pacotes que contêm esses nomes, algumas extrações seletivas precisam ler o fluxo completo do arquivo compactado.

@@ -104,6 +104,7 @@ struct ArchiveEntry: Codable, Hashable, Identifiable, Sendable {
     var original: String?
     var staged: String?
     var checksumCRC32: UInt32? = nil
+    var posixMode: Int? = nil
     var name: String { (path as NSString).lastPathComponent }
     var packedSort: Int64 { packed ?? -1 }
     var modifiedSort: Date { modified ?? .distantPast }
@@ -199,12 +200,20 @@ enum ArchiveEngine {
         if fm.isExecutableFile(atPath: parent.path) { return parent }
         return URL(fileURLWithPath: "/opt/homebrew/bin/7zz")
     }
+    private static func unlockOwnedTemporaryDirectories(_ url: URL) throws {
+        var info = stat()
+        guard lstat(url.path,&info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return }
+        try fm.setAttributes([.posixPermissions:Int(info.st_mode & 0o777) | 0o700],ofItemAtPath:url.path)
+        for child in try literalChildren(url) { try unlockOwnedTemporaryDirectories(child) }
+    }
     static func removeTemporary(_ url: URL) {
         do { try fm.removeItem(at:url) }
         catch {
             let value = error as NSError
             let missing = (value.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError,NSFileReadNoSuchFileError].contains(value.code)) || (value.domain == NSPOSIXErrorDomain && value.code == Int(ENOENT))
-            if !missing { DiagnosticLog.record("temporary-cleanup",error:error,context:["path":url.path]) }
+            if missing { return }
+            do { try unlockOwnedTemporaryDirectories(url); try fm.removeItem(at:url) }
+            catch { DiagnosticLog.record("temporary-cleanup",error:error,context:["path":url.path]) }
         }
     }
     static func workspace(in parent: URL? = nil) throws -> URL {
@@ -272,7 +281,7 @@ enum ArchiveEngine {
         let drivePrefix = path.utf8.count >= 2 && path.utf8.dropFirst().first == 58
             && path.utf8.first.map { (65...90).contains($0) || (97...122).contains($0) } == true
         guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"), !drivePrefix,
-              !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              path.split(separator:"/").allSatisfy({ part in ["Icon\r","._Icon\r"].contains(String(part)) || !part.unicodeScalars.contains(where:{ CharacterSet.controlCharacters.contains($0) }) }),
               path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             throw ArchiveError("Caminho inseguro ou incompatível no arquivo compactado: \(raw.debugDescription)")
         }
@@ -288,6 +297,15 @@ enum ArchiveEngine {
         var path = windowsSeparators ? raw.replacingOccurrences(of:"\\",with:"/") : raw
         while path.hasPrefix("./") { path.removeFirst(2) }
         return path.isEmpty || path == "."
+    }
+    static func parsedPermissions(_ text: String) -> Int? {
+        guard let range = text.range(of:"[dl-][rwxstST-]{9}",options:.regularExpression) else { return nil }
+        let chars = Array(text[range].dropFirst()); var mode = 0
+        for i in 0..<9 { if chars[i] != "-" && chars[i] != "S" && chars[i] != "T" { mode |= 1 << (8-i) } }
+        return mode
+    }
+    static func stagePermissions(_ entry: ArchiveEntry, at url: URL) throws {
+        if !entry.directory, let mode = entry.posixMode { try fm.setAttributes([.posixPermissions:(mode & 0o777) | 0o400],ofItemAtPath:url.path) }
     }
     static func collisionKey(_ path: String) -> String { path.decomposedStringWithCanonicalMapping.lowercased() }
     static func validateEntries(_ entries: [ArchiveEntry]) throws {
@@ -339,7 +357,7 @@ enum ArchiveEngine {
             guard header.count == 46, number(header,0,4) == 0x02014b50 else { throw ArchiveError("Diretório ZIP inválido.") }
             let length = Int(number(header,28,2)), extra = number(header,30,2), comment = number(header,32,2)
             let name = try file.read(upToCount:length) ?? Data()
-            guard name.count == length, !name.contains(where:{ $0 < 32 || $0 == 127 }) else { throw ArchiveError("O ZIP contém nomes com caracteres de controle não suportados.") }
+            guard name.count == length else { throw ArchiveError("O ZIP contém nomes com caracteres de controle não suportados.") }
             let windows = [0,10,14].contains(Int(header[5]))
             let decoded = String(data:name,encoding:.utf8) ?? String(decoding:name,as:UTF8.self)
             let normalized = windows ? decoded.replacingOccurrences(of:"\\",with:"/") : decoded
@@ -371,7 +389,7 @@ enum ArchiveEngine {
             let attributes = fields["Attributes"] ?? ""
             let mode = fields["Mode"] ?? ""
             let blockedLink = !(fields["Symbolic Link"] ?? "").isEmpty || !(fields["Hard Link"] ?? "").isEmpty || attributes.contains("l") || ["l","p","s","b","c"].contains(where:{ mode.hasPrefix($0) }) || attributes.contains("p") || attributes.contains("s")
-            let isDir = fields["Folder"] == "+" || attributes.hasPrefix("D") || mode.hasPrefix("d") || rawPath.hasSuffix("/")
+            let isDir = fields["Folder"] == "+" || (attributes.split(separator:" ").first?.contains("D") == true) || mode.hasPrefix("d") || rawPath.hasSuffix("/")
             let windows = detected == "zip" && ["FAT","NTFS","VFAT"].contains(fields["Host OS"] ?? "")
             if isDir && !blockedLink && isArchiveRoot(rawPath,windowsSeparators:windows) { continue }
             let path = try archivePath(rawPath,windowsSeparators:windows)
@@ -379,7 +397,7 @@ enum ArchiveEngine {
             if original.hasSuffix("/") || (windows && original.hasSuffix("\\")) { original.removeLast() }
             entries.append(ArchiveEntry(path: path, directory: isDir, size: Int64(fields["Size"] ?? "0") ?? 0,
                                         packed: Int64(fields["Packed Size"] ?? ""), modified: date.date(from: String((fields["Modified"] ?? "").prefix(19))),
-                                        encrypted: fields["Encrypted"] == "+", encryptionMethod:fields["Method"], blockedLink:blockedLink, original: original, checksumCRC32:fields["CRC"].flatMap { UInt32($0,radix:16) }))
+                                        encrypted: fields["Encrypted"] == "+", encryptionMethod:fields["Method"], blockedLink:blockedLink, original: original, checksumCRC32:fields["CRC"].flatMap { UInt32($0,radix:16) }, posixMode:parsedPermissions(mode.isEmpty ? attributes : mode)))
         }
         if entries.isEmpty && ["gzip", "bzip2", "xz"].contains(detected) {
             var name = url.deletingPathExtension().lastPathComponent
@@ -420,6 +438,23 @@ enum ArchiveEngine {
         }
         return (index,url)
     }
+    static func literalChildren(_ url: URL) throws -> [URL] {
+        guard let directory = opendir(url.path) else { throw NSError(domain:NSPOSIXErrorDomain,code:Int(errno),userInfo:[NSFilePathErrorKey:url.path]) }
+        defer { closedir(directory) }
+        var children: [URL] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(directory) else {
+                if errno != 0 { throw NSError(domain:NSPOSIXErrorDomain,code:Int(errno),userInfo:[NSFilePathErrorKey:url.path]) }; break
+            }
+            let nameCapacity = MemoryLayout.size(ofValue:entry.pointee.d_name)
+            let name = withUnsafePointer(to:&entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to:CChar.self,capacity:nameCapacity) { String(cString:$0) }
+            }
+            if name != "." && name != ".." { children.append(url.appendingPathComponent(name)) }
+        }
+        return children
+    }
     /// Copies in bounded chunks so Cancel also works for large uncompressed/staged files.
     static func copy(_ source: URL, to destination: URL, control: JobControl, progress: JobProgress = {_,_ in}) throws {
         try control.check()
@@ -428,7 +463,7 @@ enum ArchiveEngine {
         if values.isDirectory == true {
             if itemExists(destination), (try destination.resourceValues(forKeys:[.isSymbolicLinkKey])).isSymbolicLink == true { throw ArchiveError("O destino é um link simbólico: \(destination.lastPathComponent)") }
             try fm.createDirectory(at:destination,withIntermediateDirectories:true)
-            for child in try fm.contentsOfDirectory(at:source,includingPropertiesForKeys:nil) {
+            for child in try literalChildren(source) {
                 try copy(child,to:destination.appendingPathComponent(child.lastPathComponent),control:control,progress:progress)
             }
         } else {
@@ -445,6 +480,8 @@ enum ArchiveEngine {
                 progress(Double(bytes)/Double(max(values.fileSize ?? 1,1)),source.lastPathComponent)
             }
         }
+        let permissions = (try fm.attributesOfItem(atPath:source.path)[.posixPermissions] as? NSNumber)?.intValue
+        if let permissions { try fm.setAttributes([.posixPermissions:permissions & 0o777],ofItemAtPath:destination.path) }
         if let date = values.contentModificationDate { try fm.setAttributes([.modificationDate:date],ofItemAtPath:destination.path) }
         try control.check()
     }
@@ -453,7 +490,12 @@ enum ArchiveEngine {
         guard !entry.blockedLink else { throw ArchiveError("Links e arquivos especiais podem ser listados, mas não extraídos ou convertidos: \(entry.path)") }
         try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
         if entry.directory { try fm.createDirectory(at: dest, withIntermediateDirectories: true); return }
-        if let staged = entry.staged {
+        if entry.path.split(separator:"/").contains(where:{ $0 == "Icon\r" || $0 == "._Icon\r" }), entry.staged == nil, let archive {
+            let temp = try workspace(); defer { removeTemporary(temp) }
+            let prepared = try materializeZIPBatch([entry],archive:archive,password:password,stage:temp,control:control,progress:progress)
+            guard prepared.contains(entry.path) else { throw ArchiveError("Não foi possível extrair o metadado Icon\r neste formato.") }
+            try copy(temp.appendingPathComponent(entry.path),to:dest,control:control,progress:progress)
+        } else if let staged = entry.staged {
             try copy(URL(fileURLWithPath:staged),to:dest,control:control,progress:progress)
         } else if let original = entry.original, let archive {
             // Foundation.Process normalizes Unicode in argv on macOS. Member names must retain
@@ -471,6 +513,7 @@ enum ArchiveEngine {
             let size = (try dest.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0
             guard entry.size < 0 || Int64(size) == entry.size else { throw ArchiveError("Tamanho inesperado ao extrair \(entry.path): esperado \(entry.size), obtido \(size).") }
         } else { throw ArchiveError("O conteúdo de \(entry.path) não está disponível.") }
+        try stagePermissions(entry,at:dest)
         if let modified = entry.modified { try fm.setAttributes([.modificationDate: modified], ofItemAtPath: dest.path) }
     }
     private static let crcTable: [UInt32] = (0..<256).map { value in
@@ -482,17 +525,20 @@ enum ArchiveEngine {
     /// ZIP order and each member's CRC/length are checked before anything reaches the destination.
     static func materializeZIPBatch(_ entries: [ArchiveEntry], archive: URL?, password: String?, stage: URL,
                                     control: JobControl, progress: JobProgress) throws -> Set<String> {
-        guard let archive, ["zip","cbz"].contains(archive.pathExtension.lowercased()) else { return [] }
+        guard let archive else { return [] }
+        let icon = entries.contains { $0.staged == nil && $0.path.split(separator:"/").contains(where:{ $0 == "Icon\r" || $0 == "._Icon\r" }) }
+        guard icon || ["zip","cbz"].contains(archive.pathExtension.lowercased()) else { return [] }
         let candidates = entries.filter { !$0.directory && !$0.blockedLink && $0.staged == nil && $0.original?.isEmpty == false && $0.size >= 0 }
-        guard candidates.count >= 8 else { return [] }
+        guard !candidates.isEmpty && (icon || candidates.count >= 8) else { return [] }
         let stamp = try DiskStamp(archive)
         let index = try list(archive,password:password,control:control,preserveOrder:true)
-        guard index.format == "zip" else { return [] }
+        guard index.format == "zip" || (icon && ["7z","tar","rar"].contains(index.format)) else { return [] }
         let groups = Dictionary(grouping:candidates,by:{ $0.original! })
-        let members = index.entries.filter { !$0.directory && groups[$0.original ?? $0.path] != nil }
-        guard members.count == groups.count else { throw ArchiveError("O conteúdo do ZIP mudou. Reabra o arquivo antes de extrair.") }
-        guard members.allSatisfy({ !$0.blockedLink && $0.checksumCRC32 != nil && !($0.encryptionMethod ?? "").lowercased().contains("aes") }) else { return [] }
-        for member in members {
+        let selectedMembers = index.entries.filter { !$0.directory && groups[$0.original ?? $0.path] != nil }
+        let members = icon ? index.entries.filter { !$0.directory } : selectedMembers
+        guard selectedMembers.count == groups.count else { throw ArchiveError("O conteúdo do ZIP mudou. Reabra o arquivo antes de extrair.") }
+        guard members.allSatisfy({ !$0.blockedLink && ($0.checksumCRC32 != nil || (icon && (["tar","rar"].contains(index.format) || ($0.encryptionMethod ?? "").lowercased().contains("aes")))) && (icon || index.format != "zip" || !($0.encryptionMethod ?? "").lowercased().contains("aes")) }) else { return [] }
+        for member in selectedMembers {
             guard groups[member.original ?? member.path]!.allSatisfy({ $0.size == member.size && ($0.checksumCRC32 == nil || $0.checksumCRC32 == member.checksumCRC32) }) else { throw ArchiveError("O tamanho de um item mudou no ZIP. Reabra o arquivo.") }
         }
         let temp = try workspace(in:stage); defer { removeTemporary(temp) }
@@ -500,7 +546,7 @@ enum ArchiveEngine {
         try (members.map { $0.original ?? $0.path }.joined(separator:"\n") + "\n").write(to:names,atomically:true,encoding:.utf8)
         let weight = Double(candidates.count) / Double(max(entries.count,1)) * 0.8
         progress(0,"Descompactando \(members.count) arquivos…")
-        try run(["x","-so","-spd","-scsUTF-8","-r-","-i@" + names.path,"--",archive.path],password:password,output:stream,control:control,progress:{ value,_ in progress(value * weight * 0.75,"Descompactando \(members.count) arquivos…") })
+        try run(["x","-so","-spd"] + (icon ? [] : ["-scsUTF-8","-r-","-i@" + names.path]) + ["--",archive.path],password:password,output:stream,control:control,progress:{ value,_ in progress(value * weight * 0.75,"Descompactando \(members.count) arquivos…") })
         guard try DiskStamp(archive) == stamp else { throw ArchiveError("O ZIP foi alterado durante a extração. Nenhum arquivo de destino foi substituído.") }
         var total: Int64 = 0
         for member in members { let sum = total.addingReportingOverflow(member.size); guard !sum.overflow else { throw ArchiveError("Tamanho total do ZIP excede o limite suportado.") }; total = sum.partialValue }
@@ -510,7 +556,12 @@ enum ArchiveEngine {
         var materialized = Set<String>()
         for (i,member) in members.enumerated() {
             try control.check()
-            let targets = groups[member.original ?? member.path]!, entry = targets[0]
+            guard let targets = groups[member.original ?? member.path] else {
+                var remaining = member.size
+                while remaining > 0 { try control.check(); let data = try reader.read(upToCount:Int(min(remaining,1_048_576))) ?? Data(); guard !data.isEmpty else { throw ArchiveError("Fluxo incompleto.") }; remaining -= Int64(data.count) }
+                continue
+            }
+            let entry = targets[0]
             let target = stage.appendingPathComponent(entry.path)
             try fm.createDirectory(at:target.deletingLastPathComponent(),withIntermediateDirectories:true)
             guard fm.createFile(atPath:target.path,contents:nil) else { throw ArchiveError("Não foi possível preparar \(entry.name).") }
@@ -525,14 +576,16 @@ enum ArchiveEngine {
                     try output.write(contentsOf:data); remaining -= Int64(data.count)
                 }
                 try output.close()
-                guard (crc ^ 0xffffffff) == member.checksumCRC32 else { throw ArchiveError("A verificação CRC falhou em \(entry.name). Nenhum arquivo de destino foi substituído.") }
+                guard (icon && index.format == "zip" && (member.encryptionMethod ?? "").lowercased().contains("aes")) || member.checksumCRC32 == nil || (crc ^ 0xffffffff) == member.checksumCRC32 else { throw ArchiveError("A verificação CRC falhou em \(entry.name). Nenhum arquivo de destino foi substituído.") }
             } catch { try? output.close(); throw error }
+            try stagePermissions(entry,at:target)
             if let date = entry.modified { try fm.setAttributes([.modificationDate:date],ofItemAtPath:target.path) }
             materialized.insert(entry.path)
             for duplicate in targets.dropFirst() {
                 let destination = stage.appendingPathComponent(duplicate.path)
                 try fm.createDirectory(at:destination.deletingLastPathComponent(),withIntermediateDirectories:true)
                 try copy(target,to:destination,control:control)
+                try stagePermissions(duplicate,at:destination)
                 if let date = duplicate.modified { try fm.setAttributes([.modificationDate:date],ofItemAtPath:destination.path) }
                 materialized.insert(duplicate.path)
             }
@@ -560,15 +613,16 @@ enum ArchiveEngine {
             try control.check(); _ = try validatePath(path)
             let v = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
             guard v.isSymbolicLink != true, v.isDirectory == true || v.isRegularFile == true else { throw ArchiveError("Links e arquivos especiais não são aceitos: \(url.lastPathComponent)") }
+            let permissions = (try fm.attributesOfItem(atPath:url.path)[.posixPermissions] as? NSNumber)?.intValue
             if v.isDirectory == true {
-                result.append(ArchiveEntry(path: path, directory: true, size: 0, modified: v.contentModificationDate))
-                for child in try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) { try visit(child, path: path + "/" + child.lastPathComponent) }
+                result.append(ArchiveEntry(path: path, directory: true, size: 0, modified: v.contentModificationDate, posixMode:permissions.map { $0 & 0o777 }))
+                for child in try literalChildren(url) { try visit(child, path: path + "/" + child.lastPathComponent) }
             } else {
                 let target = staging.appendingPathComponent(UUID().uuidString)
                 stagedFiles.append(target)
                 let number = result.count + 1
                 try copy(url,to:target,control:control,progress:{_,_ in progress(-1,"Adicionando \(number)º item: \(url.lastPathComponent)") })
-                result.append(ArchiveEntry(path: path, directory: false, size: Int64(v.fileSize ?? 0), modified: v.contentModificationDate, staged: target.path))
+                result.append(ArchiveEntry(path: path, directory: false, size: Int64(v.fileSize ?? 0), modified: v.contentModificationDate, staged: target.path, posixMode:permissions.map { $0 & 0o777 }))
             }
         }
         for url in urls { try visit(url, path: prefix.isEmpty ? url.lastPathComponent : prefix + "/" + url.lastPathComponent) }
@@ -618,7 +672,7 @@ enum ArchiveEngine {
             && !originalFiles.isEmpty && originalFiles.allSatisfy { $0.encrypted && ($0.encryptionMethod ?? "").lowercased().contains("zipcrypto") }
             && wanted.allSatisfy { $0.staged == nil && $0.original == $0.path }
         let incremental = options.volumeMB == nil && archive != nil && originalFormat == options.format && ["zip","7z"].contains(options.format)
-            && !originalEntries.contains(where:{ $0.original != nil && $0.original != $0.path })
+            && !originalEntries.contains(where:{ ($0.original != nil && $0.original != $0.path) || $0.path.split(separator:"/").contains(where:{ $0 == "Icon\r" || $0 == "._Icon\r" }) })
             && ((!options.encrypt && !originalEntries.contains(where: \.encrypted)) || encryptedDeletion)
         let changed = incremental ? wanted.filter { $0.staged != nil || $0.original != $0.path } : wanted
         let prepared = try materializeZIPBatch(changed,archive:archive,password:originalPassword,stage:input,control:control,progress:{ value,text in progress(value * 0.625,text) })
@@ -627,6 +681,7 @@ enum ArchiveEngine {
             progress(Double(prepared.count + i) / Double(max(changed.count,1)) * 0.50, "Preparando \(e.name)")
             try materialize(e, archive: archive, password: originalPassword, to: input.appendingPathComponent(e.path), control: control)
         }
+        for entry in wanted.filter(\.directory).sorted(by:{ $0.path.count > $1.path.count }) { if let mode = entry.posixMode, fm.fileExists(atPath:input.appendingPathComponent(entry.path).path) { try fm.setAttributes([.posixPermissions:(mode & 0o777) | 0o500],ofItemAtPath:input.appendingPathComponent(entry.path).path) } }
         if options.format == "rar" || (options.format == "7z" && options.volumeMB != nil) {
             return try writeNativeArchive(input:input, temp:temp, wanted:wanted, destination:destination, options:options, password:password, archive:archive, expectedStamp:expectedStamp, control:control, progress:progress)
         }
@@ -841,6 +896,12 @@ enum ArchiveEngine {
                 try control.check()
                 try publishNewItem(pending,to:target)
                 created.append(target); createdByName[collisionKey(target.path),default:[]].append(target)
+                for entry in entries.filter({ $0.path == e.path || $0.path.hasPrefix(e.path + "/") }).sorted(by:{ $0.path.count > $1.path.count }) {
+                    if let mode = entry.posixMode {
+                        let path = entry.path == e.path ? target : target.appendingPathComponent(String(entry.path.dropFirst(e.path.count+1)))
+                        try fm.setAttributes([.posixPermissions:mode & 0o777],ofItemAtPath:path.path)
+                    }
+                }
             }
             try control.check()
         } catch {

@@ -133,3 +133,14 @@ Validação:
 - Matriz manual de ZIP, 7z, TAR, TGZ, TBZ2 e TXZ nos níveis 0/1/9, além do nível 5 coberto na suíte do motor: todos passaram.
 - Suítes completas de motor/documentos/Atalhos, compatibilidade ZIP, resumo, preferências, extração em lote, edição grande, nomes com dois-pontos, volumes ZIP/7z/RAR, diagnóstico, arrastar e múltiplas janelas passaram.
 - Testes de falha e compatibilidade utilizam exclusivamente dados sintéticos em pastas temporárias; nenhum arquivo original do usuário foi modificado.
+
+## Versão 2.6.7 — Permissões e metadado Icon do Finder
+
+- Preserva bits POSIX de leitura/escrita/execução na cópia, staging, gravação e extração. Bits especiais de privilégio não são restaurados.
+- Permite exclusivamente os componentes `Icon\r` e `._Icon\r` entre nomes com caracteres de controle; outros controles, travessia e caminhos absolutos continuam bloqueados.
+- Leitura em fluxo completo quando o nome especial não pode ser representado na lista de seleção do motor, com verificação de tamanho/integridade antes de publicar.
+- Testes sintéticos de permissões 755, compactação, extração, prévia e exclusão em ZIP/7z/TAR/TGZ e leitura em RAR; senha ZipCrypto/7z AES/RAR e ZIP AES.
+
+- Corrigida a identificação de pastas somente leitura em 7z (`RD`), antes confundidas com arquivos. Testes preservam também o modo 555 dessas pastas.
+
+- Preserva também `._Icon\r`, inclusive quando a enumeração padrão do macOS oculta o arquivo AppleDouble associado.
