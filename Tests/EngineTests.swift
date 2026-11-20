@@ -64,7 +64,7 @@ import Foundation
             }
             print("PASS encryption: " + format)
         }
-        for path in ["../escape","/absolute","a/../b","a\\b","a\nb","C:/test","a//b"] { try rejects("unsafe " + path.debugDescription) { _ = try ArchiveEngine.validatePath(path) } }
+        for path in ["../escape","/absolute","a/../b","a\\b","a\nb","C:/test","C:relative","z:/test","a//b"] { try rejects("unsafe " + path.debugDescription) { _ = try ArchiveEngine.validatePath(path) } }
         try rejects("case collision") { try ArchiveEngine.validateEntries([ArchiveEntry(path:"A",directory:false,size:0),ArchiveEntry(path:"a",directory:false,size:0)]) }
         let link = root.appendingPathComponent("link"); try fm.createSymbolicLink(at:link,withDestinationURL:input)
         try rejects("symbolic link") { _ = try ArchiveEngine.scan([link],prefix:"",staging:stage,control:token) }

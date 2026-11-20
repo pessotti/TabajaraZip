@@ -263,7 +263,11 @@ enum ArchiveEngine {
     }
     static func validatePath(_ raw: String) throws -> String {
         let path = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
-        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"), !path.contains(":"),
+        // Colons are legal POSIX filename characters (for example IPv6 log names).
+        // Reject Windows drive prefixes rather than every occurrence of a colon.
+        let drivePrefix = path.utf8.count >= 2 && path.utf8.dropFirst().first == 58
+            && path.utf8.first.map { (65...90).contains($0) || (97...122).contains($0) } == true
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"), !drivePrefix,
               !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             throw ArchiveError("Caminho inseguro ou incompatível no arquivo compactado: \(raw.debugDescription)")

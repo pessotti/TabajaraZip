@@ -108,3 +108,9 @@ Os testes do código das ações nativas passaram; a descoberta e execução des
 - Testes com pasta de 4.000 arquivos, seleção individual grande, lista de exclusão acima do limite de argumentos, conteúdo mantido, caches após desfazer/restaurar e cancelamento antes/durante gravação.
 - Em cópia temporária de um ZIP real, remover 1.823 itens atualizou o resumo em 0,1 s; salvar e verificar levou aproximadamente 2,1 s. SHA-256 confirmou o original preservado.
 - Exclusão pura de ZIP ZipCrypto com senha mantida preserva os membros comprimidos, sem extração; troca de senha reconstrói por um único fluxo e a senha nova é verificada.
+
+## Versão 2.6.5 — Nomes com dois-pontos
+
+- Corrigida a rejeição indevida de nomes POSIX contendo `:`, incluindo logs IPv6 como `php_errors_::1.log`.
+- Prefixos de unidade Windows, caminhos absolutos, travessia `..`, barras invertidas e caracteres de controle continuam bloqueados.
+- `test-colon-names.sh`: compactação, extração em lote/individual e exclusão preservam nomes com dois-pontos em arquivos e pastas; testes usam somente conteúdo sintético.
