@@ -89,3 +89,12 @@ Os testes do código das ações nativas passaram; a descoberta e execução des
 - Senhas e saída padrão simulando conteúdo privado não aparecem nos arquivos de diagnóstico, inclusive ao registrar novamente um erro propagado.
 - Logger compartilhado pela interface, CLI, Atalhos, Quick Look, prévias, lote, preferências e limpeza/rollback; aviso no Console se o destino não puder ser escrito.
 - Logs locais excluídos explicitamente do Git e da distribuição.
+
+## Versão 2.6.3 — Extração de ZIPs com muitos arquivos
+
+- Extração ZIP em um único fluxo, separando os membros por tamanho e verificando CRC individual, sem delegar caminhos de saída ao motor.
+- Ancestrais selecionados identificados por percurso de pais, evitando a comparação de todos os caminhos entre si.
+- ZIP real com 7.255 itens/6.506 arquivos extraído em aproximadamente 6 segundos; conteúdo comparado byte a byte em pasta temporária. Nenhum conteúdo privado foi incluído no repositório.
+- Teste de regressão sintético com muitos arquivos, seleção parcial, ordem do ZIP, nomes especiais, renomeação, edição em staging, senha e cancelamento.
+- Seleção de membros em listas UTF-8 preserva a normalização Unicode original, evitando conversão automática dos argumentos pelo macOS.
+- Fluxo corrompido de mesmo tamanho é rejeitado pelo CRC antes de modificar o destino; colisões de nomes na extração parcial produzem erro com rollback, sem forçar um resolvedor ausente.
